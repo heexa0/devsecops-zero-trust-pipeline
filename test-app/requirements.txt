@@ -1,0 +1,6 @@
+flask==2.3.3
+Werkzeug==2.3.7
+requests==2.28.0
+Pillow==9.5.0
+cryptography==38.0.0
+urllib3==1.26.14
