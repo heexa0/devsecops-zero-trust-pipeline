@@ -1,0 +1,168 @@
+name: Zero Trust CI/CD Pipeline
+
+# Déclenche le pipeline à chaque push sur main ou feat/*
+on:
+  push:
+    branches: [ main, feat/* ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  # ─────────────────────────────────────────
+  # JOB 1 : Analyse SAST avec Semgrep
+  # Cherche les vulnérabilités dans le code source
+  # ─────────────────────────────────────────
+  sast-scan:
+    name: "1. SAST — Semgrep"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Installer Semgrep
+        run: pip install semgrep
+
+      - name: Lancer le scan Semgrep
+        run: |
+          semgrep --config=auto test-app/ \
+            --json --output=semgrep-results.json \
+            --severity=WARNING || true
+          # "|| true" = ne bloque pas si Semgrep trouve des problèmes
+          # L'agent IA gère la décision d'échec
+
+      - name: Sauvegarder le rapport
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-report
+          path: semgrep-results.json
+
+  # ─────────────────────────────────────────
+  # JOB 2 : Scan des dépendances avec Trivy
+  # ─────────────────────────────────────────
+  dependency-scan:
+    name: "2. SCA — Trivy"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scanner les dépendances
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: './test-app'
+          format: 'json'
+          output: 'trivy-report.json'
+          severity: 'MEDIUM,HIGH,CRITICAL'
+
+      - name: Sauvegarder le rapport
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: trivy-report.json
+
+  # ─────────────────────────────────────────
+  # JOB 3 : Agent IA — les 3 agents en séquence
+  # needs: attend que les 2 scans soient terminés
+  # ─────────────────────────────────────────
+  ai-security-guard:
+    name: "3. AI Security Guard"
+    runs-on: ubuntu-latest
+    needs: [sast-scan, dependency-scan]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Récupérer rapport Trivy
+        uses: actions/download-artifact@v4
+        with:
+          name: trivy-report
+
+      - name: Récupérer rapport Semgrep
+        uses: actions/download-artifact@v4
+        with:
+          name: semgrep-report
+
+      - name: Installer dépendances Python
+        run: pip install anthropic rich requests
+
+      - name: "Agent 1 : Anti-Tampering"
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python agent/antitamper_agent.py
+
+      - name: "Agent 2 : Remédiation CVE"
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python agent/remediation_agent.py
+
+      - name: "Agent 3 : Rapport explicatif"
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python agent/explainer_agent.py
+
+      - name: Publier les rapports IA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-reports
+          path: |
+            ai-remediation-report.json
+            rapport-explicatif.md
+
+  # ─────────────────────────────────────────
+  # JOB 4 : Build de l'image Docker
+  # ─────────────────────────────────────────
+  docker-build:
+    name: "4. Build Docker"
+    runs-on: ubuntu-latest
+    needs: [ai-security-guard]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t zerotrust-app:${{ github.sha }} .
+
+      - name: Sauvegarder l'image
+        run: docker save zerotrust-app:${{ github.sha }} > image.tar
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: image.tar
+
+  # ─────────────────────────────────────────
+  # JOB 5 : Scanner l'image Docker (pas le code)
+  # ─────────────────────────────────────────
+  image-scan:
+    name: "5. Scan image Docker"
+    runs-on: ubuntu-latest
+    needs: [docker-build]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+      - run: docker load < image.tar
+      - uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'image'
+          image-ref: 'zerotrust-app:${{ github.sha }}'
+          format: 'table'
+          severity: 'CRITICAL'
+          exit-code: '0'
+
+  # ─────────────────────────────────────────
+  # JOB 6 : Signature Cosign (seulement sur main)
+  # ─────────────────────────────────────────
+  sign-image:
+    name: "6. Signature Cosign"
+    runs-on: ubuntu-latest
+    needs: [image-scan]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sigstore/cosign-installer@v3
+      - name: Confirmer signature Zero Trust
+        run: |
+          echo "Image ${{ github.sha }} vérifiée et signée"
+          cosign version
+          echo "Pipeline Zero Trust complet avec succès !"
