@@ -1,0 +1,30 @@
+{
+  "vulnerabilites": [
+    {
+      "cve": "CVE-2023-50447",
+      "package": "Pillow",
+      "correction_requirements": " Pillow>=\"10.2.0\"",
+      "priorite": "CRITICAL"
+    },
+    {
+      "cve": "CVE-2023-44271",
+      "package": "Pillow",
+      "correction_requirements": " Pillow<=\"10.0.0\"",
+      "priorite": "HIGH"
+    },
+    {
+      "cve": "CVE-2023-4863",
+      "package": "Pillow",
+      "correction_requirements": " Pillow>=\"10.0.1\"",
+      "priorite": "HIGH"
+    },
+    {
+      "cve": "CVE-2024-28219",
+      "package": "Pillow",
+      "correction_requirements": "Pillow>=10.3.0",
+      "priorite": "HAUTE"
+    }
+  ],
+  "resume": "4 CVE analysées en 2 lot(s) par l'IA Ollama",
+  "action_immediate": "Appliquer les corrections dans requirements.txt et relancer Trivy"
+}
