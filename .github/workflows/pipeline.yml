@@ -126,6 +126,10 @@ jobs:
     name: "Docker - Build and Scan Image"
     runs-on: ubuntu-latest
     needs: [sast-scan, sca-scan]
+    permissions:
+      id-token: write   # required for Cosign keyless signing via Sigstore OIDC
+      contents: read
+      packages: write
 
     steps:
       - name: Checkout repository
@@ -171,8 +175,11 @@ jobs:
       - name: Sign Docker image with Cosign (keyless)
         env:
           COSIGN_EXPERIMENTAL: "1"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cosign sign --yes ${{ env.IMAGE_NAME }}
+          cosign sign --yes \
+            --rekor-url https://rekor.sigstore.dev \
+            ${{ env.IMAGE_NAME }}
 
       # Verify the signature we just created to confirm the signing round-trip.
       # In a real pipeline this step would run in the deploy job against the
