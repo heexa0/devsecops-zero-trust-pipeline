@@ -1,0 +1,257 @@
+# =============================================================================
+#  ZERO TRUST DEVSECOPS PIPELINE
+# =============================================================================
+#
+#  Full pipeline flow:
+#
+#  [push / PR]
+#       │
+#       ├──► Job 1: sast-scan       → Semgrep scans app/ source code
+#       │                              Uploads semgrep-report.json
+#       │
+#       ├──► Job 2: sca-scan        → Trivy scans app/requirements.txt
+#       │                              Uploads trivy-report.json
+#       │
+#       └──► Job 3: docker-scan     → Builds Docker image, Trivy scans it
+#            (needs: sast + sca)       Prints findings table
+#                 │
+#                 └──► Job 4: ai-security-agent
+#                      (needs: docker-scan)
+#                           Downloads both JSON reports
+#                           Runs ai_agent.py → Claude API
+#                           Uploads ai-report.md
+#                                │
+#                                └──► Job 5: security-gate
+#                                     (needs: ai-agent)
+#                                          Prints full AI report
+#                                          ✋ Human validation checkpoint
+#
+# =============================================================================
+
+name: Zero Trust DevSecOps Pipeline
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.11"
+  APP_NAME: "devsecops-app"
+  IMAGE_NAME: "devsecops-app:latest"
+
+# =============================================================================
+# JOB 1 — SAST: Static Application Security Testing via Semgrep
+# Scans Python source code for dangerous patterns (command injection,
+# insecure deserialization, hardcoded secrets, debug mode, etc.)
+# =============================================================================
+jobs:
+  sast-scan:
+    name: "SAST - Semgrep Code Scan"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Semgrep
+        run: pip install semgrep
+
+      # continue-on-error: true ensures the report is always uploaded
+      # even when Semgrep finds vulnerabilities (non-zero exit code)
+      - name: Run Semgrep scan
+        continue-on-error: true
+        run: |
+          semgrep --config auto app/ \
+            --json \
+            --output semgrep-report.json
+          echo "Semgrep scan complete — findings saved to semgrep-report.json"
+
+      - name: Upload Semgrep report
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: semgrep-report
+          path: semgrep-report.json
+
+# =============================================================================
+# JOB 2 — SCA: Software Composition Analysis via Trivy
+# Scans app/requirements.txt for known CVEs in pinned dependency versions
+# =============================================================================
+  sca-scan:
+    name: "SCA - Trivy Dependency Scan"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+          sudo mv ./bin/trivy /usr/local/bin/trivy
+          trivy --version
+
+      # exit-code 0 so the pipeline continues and produces the report
+      # even when HIGH/CRITICAL CVEs are found
+      - name: Run Trivy filesystem scan
+        continue-on-error: true
+        run: |
+          trivy fs app/ \
+            --format json \
+            --output trivy-report.json \
+            --severity HIGH,CRITICAL \
+            --exit-code 0
+          echo "Trivy scan complete — findings saved to trivy-report.json"
+
+      - name: Upload Trivy report
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: trivy-report
+          path: trivy-report.json
+
+# =============================================================================
+# JOB 3 — Docker: Build image and scan it with Trivy
+# Detects vulnerabilities in the OS layer, installed packages, and config
+# Runs only after both SAST and SCA scans have completed
+# =============================================================================
+  docker-scan:
+    name: "Docker - Build and Scan Image"
+    runs-on: ubuntu-latest
+    needs: [sast-scan, sca-scan]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ env.IMAGE_NAME }} .
+          echo "Docker image built: ${{ env.IMAGE_NAME }}"
+
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+          sudo mv ./bin/trivy /usr/local/bin/trivy
+
+      # Scans the built image layers — finds OS CVEs, misconfigs, root user, etc.
+      - name: Scan Docker image with Trivy
+        continue-on-error: true
+        run: |
+          trivy image ${{ env.IMAGE_NAME }} \
+            --severity HIGH,CRITICAL \
+            --format table \
+            --exit-code 0
+
+      - name: Print Docker scan summary
+        run: |
+          echo "============================================"
+          echo "  Docker image scan complete"
+          echo "  Image : ${{ env.IMAGE_NAME }}"
+          echo "  Scope : HIGH and CRITICAL findings only"
+          echo "  See table output above for full details"
+          echo "============================================"
+
+# =============================================================================
+# JOB 4 — AI Security Agent: Claude analyses all scan findings
+# Downloads both JSON reports and runs ai_agent.py to generate
+# a structured remediation report via the Anthropic API
+# =============================================================================
+  ai-security-agent:
+    name: "AI Agent - Claude Security Analysis"
+    runs-on: ubuntu-latest
+    needs: [docker-scan]
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Python dependencies
+        run: pip install anthropic python-dotenv
+
+      # Download the scan reports produced by jobs 1 and 2
+      - name: Download Semgrep report
+        uses: actions/download-artifact@v3
+        with:
+          name: semgrep-report
+
+      - name: Download Trivy report
+        uses: actions/download-artifact@v3
+        with:
+          name: trivy-report
+
+      # ai_agent.py reads both JSON files, calls Claude, writes ai-report.md
+      - name: Run AI Security Agent
+        continue-on-error: true
+        run: python ai_agent.py
+
+      - name: Upload AI report
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: ai-report
+          path: ai-report.md
+
+# =============================================================================
+# JOB 5 — Security Gate: Human validation checkpoint (Zero Trust principle)
+# Prints the full AI report and halts for human review before any deployment
+# This job intentionally does NOT block — the manual approval gate is the
+# next step to add via GitHub Environments (see comment below)
+# =============================================================================
+  security-gate:
+    name: "Security Gate - Human Validation Checkpoint"
+    runs-on: ubuntu-latest
+    needs: [ai-security-agent]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Download AI report
+        uses: actions/download-artifact@v3
+        with:
+          name: ai-report
+
+      - name: Print full AI security report
+        run: |
+          echo "============================================"
+          echo "  AI SECURITY REPORT CONTENTS"
+          echo "============================================"
+          if [ -f ai-report.md ]; then
+            cat ai-report.md
+          else
+            echo "⚠️  ai-report.md not found — AI agent may have failed"
+          fi
+
+      - name: Zero Trust Security Gate
+        run: |
+          echo "============================================"
+          echo "  🔐 ZERO TRUST SECURITY GATE              "
+          echo "  All scans completed.                     "
+          echo "  AI report generated.                     "
+          echo "  ✋ Human validation required              "
+          echo "     before any deployment.                "
+          echo "============================================"
+          exit 0
+
+      # Next step: add manual approval via GitHub Environments
+      # 1. Go to Settings → Environments → New environment: "production"
+      # 2. Enable "Required reviewers" and add yourself
+      # 3. Add a new job "deploy" with: environment: production
+      #    needs: [security-gate]
+      # GitHub will then pause the pipeline and wait for your approval
+      # before the deploy job runs — enforcing Zero Trust at the gate.
