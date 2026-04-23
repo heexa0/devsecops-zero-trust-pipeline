@@ -332,7 +332,7 @@ jobs:
       - name: Verify image signature
         continue-on-error: true
         run: |
-          cosign verify ${{ env.IMAGE_NAME }} \
+          cosign verify ghcr.io/${{ github.repository }}/devsecops-app:latest \
             --certificate-identity-regexp=".*" \
             --certificate-oidc-issuer-regexp=".*"
 
