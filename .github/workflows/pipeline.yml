@@ -1,6 +1,5 @@
 name: Zero Trust CI/CD Pipeline
 
-# Déclenche le pipeline à chaque push sur main ou feat/*
 on:
   push:
     branches: [ main, feat/* ]
@@ -9,51 +8,44 @@ on:
 
 env:
   IMAGE_NAME: zerotrust-app
-  # Le pipeline utilise l'API Anthropic en CI/CD (runners GitHub = pas de GPU)
-  # En local : les agents utilisent Ollama automatiquement (voir ollama_client.py)
-  AI_MODE: "cloud"
 
 jobs:
   # ─────────────────────────────────────────
-  # JOB 1 : Analyse SAST avec Semgrep
+  # JOB 1 : SAST — Semgrep
   # ─────────────────────────────────────────
   sast-scan:
     name: "1. SAST — Semgrep"
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout du code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Installer Semgrep
         run: pip install semgrep
 
-      - name: Lancer le scan Semgrep
+      - name: Lancer le scan
         run: |
           semgrep --config=auto test-app/ \
             --json --output=semgrep-results.json \
             --severity=WARNING || true
 
-      - name: Résumé Semgrep
+      - name: Resume
         run: |
           python3 -c "
-          import json, sys
+          import json
           try:
             d = json.load(open('semgrep-results.json'))
             r = d.get('results', [])
-            print(f'Semgrep : {len(r)} problème(s) trouvé(s)')
-            for i in r[:3]:
-              print(f'  - {i[\"check_id\"]} dans {i[\"path\"]}:{i[\"start\"][\"line\"]}')
-          except: print('Rapport Semgrep vide ou invalide')
+            print(f'Semgrep : {len(r)} probleme(s)')
+          except: print('Rapport vide')
           "
 
-      - name: Sauvegarder le rapport
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: semgrep-report
           path: semgrep-results.json
 
   # ─────────────────────────────────────────
-  # JOB 2 : Scan des dépendances avec Trivy
+  # JOB 2 : SCA — Trivy
   # ─────────────────────────────────────────
   dependency-scan:
     name: "2. SCA — Trivy"
@@ -61,7 +53,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Scanner les dépendances
+      - name: Scanner les dependances
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'fs'
@@ -70,29 +62,28 @@ jobs:
           output: 'trivy-report.json'
           severity: 'MEDIUM,HIGH,CRITICAL'
 
-      - name: Résumé Trivy
+      - name: Resume
         run: |
           python3 -c "
           import json
           try:
             d = json.load(open('trivy-report.json'))
-            total = sum(len(r.get('Vulnerabilities') or []) for r in d.get('Results', []))
-            critical = sum(1 for r in d.get('Results', []) for v in (r.get('Vulnerabilities') or []) if v.get('Severity') == 'CRITICAL')
-            high = sum(1 for r in d.get('Results', []) for v in (r.get('Vulnerabilities') or []) if v.get('Severity') == 'HIGH')
-            print(f'Trivy : {total} CVE totales — {critical} CRITICAL, {high} HIGH')
-          except: print('Rapport Trivy vide')
+            total    = sum(len(r.get('Vulnerabilities') or []) for r in d.get('Results', []))
+            critical = sum(1 for r in d.get('Results', []) for v in (r.get('Vulnerabilities') or []) if v.get('Severity')=='CRITICAL')
+            high     = sum(1 for r in d.get('Results', []) for v in (r.get('Vulnerabilities') or []) if v.get('Severity')=='HIGH')
+            print(f'Trivy : {total} CVE  {critical} CRITICAL  {high} HIGH')
+          except: print('Rapport vide')
           "
 
-      - name: Sauvegarder le rapport
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: trivy-report
           path: trivy-report.json
 
   # ─────────────────────────────────────────
-  # JOB 3 : Agent IA — mode automatique
-  # En CI/CD GitHub Actions : utilise l'API Anthropic
-  # En local               : utilise Ollama
+  # JOB 3 : Agent IA adaptatif
+  #   ANTHROPIC_API_KEY present  -> API Anthropic
+  #   pas de cle                 -> Ollama local
   # ─────────────────────────────────────────
   ai-security-guard:
     name: "3. AI Security Guard"
@@ -101,197 +92,186 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Récupérer rapport Trivy
+      - name: Telecharger rapport Trivy
         uses: actions/download-artifact@v4
         with:
           name: trivy-report
 
-      - name: Récupérer rapport Semgrep
+      - name: Telecharger rapport Semgrep
         uses: actions/download-artifact@v4
         with:
           name: semgrep-report
 
-      - name: Installer dépendances Python
+      - name: Installer dependances Python
+        run: pip install anthropic rich requests pydantic
+
+      - name: Copier rapports dans agent/
         run: |
-          pip install anthropic rich requests pydantic
-
-      # ── Injection du client IA adaptatif ─────────────────────────────────
-      # On injecte un fichier ollama_client.py qui :
-      #   - utilise l'API Anthropic si ANTHROPIC_API_KEY est défini (CI/CD)
-      #   - utilise Ollama local si pas de clé (machine locale)
-      # Cela permet aux agents (remediation, antitamper, explainer) de fonctionner
-      # sans modification que ce soit en local ou dans GitHub Actions.
-      - name: Créer le client IA adaptatif pour CI/CD
-        run: |
-          cat > agent/ollama_client.py << 'PYEOF'
-          import os
-          import json
-          import requests
-          from rich.console import Console
-
-          console = Console()
-
-          # ── Détection automatique du mode ──────────────────────────────
-          # Si ANTHROPIC_API_KEY est défini → mode cloud (GitHub Actions)
-          # Sinon                           → mode local Ollama
-          ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-          OLLAMA_URL        = "http://localhost:11434"
-          DEFAULT_MODEL     = "llama3.2:3b"
-          CLOUD_MODEL       = "claude-haiku-4-5-20251001"
-
-          MODE = "cloud" if ANTHROPIC_API_KEY else "local"
-
-
-          def verifier_ollama() -> bool:
-              """Vérifie la disponibilité du backend IA (Anthropic ou Ollama)"""
-              if MODE == "cloud":
-                  console.print(f"[blue]Mode CI/CD — API Anthropic ({CLOUD_MODEL})[/blue]")
-                  return True
-              # Mode local : vérifier Ollama
-              try:
-                  resp    = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
-                  modeles = [m["name"] for m in resp.json().get("models", [])]
-                  trouve  = any(DEFAULT_MODEL.split(":")[0] in m for m in modeles)
-                  if not trouve:
-                      console.print(f"[red]Modèle {DEFAULT_MODEL} non trouvé[/red]")
-                      console.print(f"[yellow]Lancer : ollama pull {DEFAULT_MODEL}[/yellow]")
-                      return False
-                  console.print(f"[green]Ollama OK — {DEFAULT_MODEL} prêt (Zero Trust local)[/green]")
-                  return True
-              except requests.exceptions.ConnectionError:
-                  console.print("[red]Ollama non lancé — lancer : ollama serve[/red]")
-                  return False
-
-
-          def _appeler_anthropic(prompt: str) -> str:
-              """Appelle l'API Anthropic (Claude) — utilisé en CI/CD GitHub Actions"""
-              headers = {
-                  "x-api-key":         ANTHROPIC_API_KEY,
-                  "anthropic-version": "2023-06-01",
-                  "content-type":      "application/json",
-              }
-              payload = {
-                  "model":      CLOUD_MODEL,
-                  "max_tokens": 1024,
-                  "messages":   [{"role": "user", "content": prompt}],
-              }
-              try:
-                  resp = requests.post(
-                      "https://api.anthropic.com/v1/messages",
-                      headers=headers,
-                      json=payload,
-                      timeout=60,
-                  )
-                  resp.raise_for_status()
-                  data = resp.json()
-                  return data["content"][0]["text"]
-              except requests.exceptions.Timeout:
-                  console.print("[red]Timeout API Anthropic (60s)[/red]")
-                  return ""
-              except Exception as e:
-                  console.print(f"[red]Erreur API Anthropic : {e}[/red]")
-                  return ""
-
-
-          def _appeler_ollama(prompt: str) -> str:
-              """Appelle Ollama en local — utilisé sur la machine des développeurs"""
-              payload = {
-                  "model":   DEFAULT_MODEL,
-                  "prompt":  prompt,
-                  "stream":  False,
-                  "options": {
-                      "temperature": 0.1,
-                      "num_predict": 512,
-                      "num_ctx":     2048,
-                  },
-              }
-              try:
-                  console.print(f"[blue]Appel Ollama ({DEFAULT_MODEL}) — jusqu'à 5 min sur CPU...[/blue]")
-                  resp = requests.post(
-                      f"{OLLAMA_URL}/api/generate",
-                      json=payload,
-                      timeout=300,
-                  )
-                  resp.raise_for_status()
-                  return resp.json().get("response", "")
-              except requests.exceptions.Timeout:
-                  console.print("[red]Timeout Ollama (300s)[/red]")
-                  return ""
-              except Exception as e:
-                  console.print(f"[red]Erreur Ollama : {e}[/red]")
-                  return ""
-
-
-          def appeler_ollama(prompt: str, model: str = None) -> str:
-              """Point d'entrée unifié — choisit automatiquement Anthropic ou Ollama"""
-              if MODE == "cloud":
-                  console.print("[blue]Appel API Anthropic (CI/CD mode)...[/blue]")
-                  return _appeler_anthropic(prompt)
-              return _appeler_ollama(prompt)
-
-
-          def appeler_ollama_json(prompt: str, model: str = None) -> dict:
-              """Appelle le backend IA et parse la réponse en JSON"""
-              reponse = appeler_ollama(prompt, model)
-              if not reponse:
-                  return {}
-
-              texte = reponse.strip()
-
-              # Nettoyer les blocs markdown que les LLMs ajoutent souvent
-              if "```json" in texte:
-                  texte = texte.split("```json")[1].split("```")[0]
-              elif "```" in texte:
-                  texte = texte.split("```")[1].split("```")[0]
-
-              # Extraire le JSON entre { et }
-              debut = texte.find("{")
-              fin   = texte.rfind("}")
-              if debut != -1 and fin != -1:
-                  texte = texte[debut : fin + 1]
-
-              try:
-                  return json.loads(texte.strip())
-              except json.JSONDecodeError as e:
-                  console.print(f"[yellow]Réponse non-JSON ({e})[/yellow]")
-                  return {"texte_brut": reponse}
-          PYEOF
-          echo "Client IA adaptatif créé"
-          python3 -c "import ast; ast.parse(open('agent/ollama_client.py').read()); print('Syntaxe Python OK')"
-
-      # ── Agent 1 : Anti-Tampering ─────────────────────────────────────────
-      - name: "Agent 1 — Anti-Tampering (vérifie le pipeline)"
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          cd agent
-          python antitamper_agent.py
-        continue-on-error: true
-        # continue-on-error : si l'agent échoue (ex: clé absente),
-        # les étapes suivantes continuent quand même
-
-      # ── Agent 2 : Remédiation CVE ────────────────────────────────────────
-      - name: "Agent 2 — Remédiation CVE (analyse Trivy)"
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPO: ${{ github.repository }}
-        run: |
-          cp trivy-report.json agent/trivy-report.json
+          cp trivy-report.json    agent/trivy-report.json
           cp semgrep-results.json agent/semgrep-results.json
-          cd agent
-          python remediation_agent.py
 
-      # ── Agent 3 : Rapport explicatif ─────────────────────────────────────
-      - name: "Agent 3 — Rapport explicatif (pédagogique)"
+      # ─────────────────────────────────────
+      # CORRECTION PRINCIPALE :
+      # On ecrit ollama_client.py directement
+      # sans heredoc imbriqué pour eviter les
+      # problemes d'indentation et d'echappement.
+      # verifier_ollama() retourne True en mode
+      # cloud SANS toucher Ollama.
+      # ─────────────────────────────────────
+      - name: Injecter client IA adaptatif
+        run: |
+          python3 << 'SCRIPTEOF'
+          content = '''import os
+import json
+import requests
+from rich.console import Console
+
+console = Console()
+
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+OLLAMA_URL        = "http://localhost:11434"
+DEFAULT_MODEL     = "llama3.2:3b"
+CLOUD_MODEL       = "claude-haiku-4-5-20251001"
+
+MODE = "cloud" if ANTHROPIC_API_KEY else "local"
+
+
+def verifier_ollama() -> bool:
+    if MODE == "cloud":
+        console.print(f"[blue]Mode CI/CD Anthropic ({CLOUD_MODEL})[/blue]")
+        return True
+    try:
+        resp    = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
+        modeles = [m["name"] for m in resp.json().get("models", [])]
+        trouve  = any(DEFAULT_MODEL.split(":")[0] in m for m in modeles)
+        if not trouve:
+            console.print(f"[red]Modele {DEFAULT_MODEL} non trouve[/red]")
+            return False
+        console.print(f"[green]Ollama OK — {DEFAULT_MODEL} pret[/green]")
+        return True
+    except requests.exceptions.ConnectionError:
+        console.print("[red]Ollama non lance — lancer : ollama serve[/red]")
+        return False
+    except Exception as e:
+        console.print(f"[red]Erreur : {e}[/red]")
+        return False
+
+
+def _appeler_anthropic(prompt: str) -> str:
+    headers = {
+        "x-api-key":         ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type":      "application/json",
+    }
+    payload = {
+        "model":      CLOUD_MODEL,
+        "max_tokens": 1024,
+        "messages":   [{"role": "user", "content": prompt}],
+    }
+    try:
+        console.print(f"[blue]API Anthropic ({CLOUD_MODEL})...[/blue]")
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers=headers,
+            json=payload,
+            timeout=60,
+        )
+        resp.raise_for_status()
+        return resp.json()["content"][0]["text"]
+    except requests.exceptions.Timeout:
+        console.print("[red]Timeout API Anthropic[/red]")
+        return ""
+    except Exception as e:
+        console.print(f"[red]Erreur Anthropic : {e}[/red]")
+        return ""
+
+
+def _appeler_ollama_local(prompt: str) -> str:
+    payload = {
+        "model":   DEFAULT_MODEL,
+        "prompt":  prompt,
+        "stream":  False,
+        "options": {"temperature": 0.1, "num_predict": 512, "num_ctx": 2048},
+    }
+    try:
+        console.print(f"[blue]Ollama ({DEFAULT_MODEL})...[/blue]")
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/generate",
+            json=payload,
+            timeout=300,
+        )
+        resp.raise_for_status()
+        return resp.json().get("response", "")
+    except requests.exceptions.Timeout:
+        console.print("[red]Timeout Ollama (300s)[/red]")
+        return ""
+    except Exception as e:
+        console.print(f"[red]Erreur Ollama : {e}[/red]")
+        return ""
+
+
+def appeler_ollama(prompt: str, model: str = None) -> str:
+    if MODE == "cloud":
+        return _appeler_anthropic(prompt)
+    return _appeler_ollama_local(prompt)
+
+
+def appeler_ollama_json(prompt: str, model: str = None) -> dict:
+    reponse = appeler_ollama(prompt, model)
+    if not reponse:
+        return {}
+    texte = reponse.strip()
+    if "```json" in texte:
+        texte = texte.split("```json")[1].split("```")[0]
+    elif "```" in texte:
+        texte = texte.split("```")[1].split("```")[0]
+    debut = texte.find("{")
+    fin   = texte.rfind("}")
+    if debut != -1 and fin != -1:
+        texte = texte[debut:fin + 1]
+    try:
+        return json.loads(texte.strip())
+    except json.JSONDecodeError as e:
+        console.print(f"[yellow]Non-JSON ({e})[/yellow]")
+        return {"texte_brut": reponse}
+'''
+          with open("agent/ollama_client.py", "w") as f:
+              f.write(content)
+          print("ollama_client.py ecrit avec succes")
+
+          import ast
+          with open("agent/ollama_client.py") as f:
+              ast.parse(f.read())
+          print("Syntaxe Python OK")
+          SCRIPTEOF
+
+      # ── Agent 1 : Anti-Tampering ──────────────────
+      - name: "Agent 1 — Anti-Tampering"
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          cd agent
-          python explainer_agent.py
+        working-directory: agent
+        run: python antitamper_agent.py
         continue-on-error: true
 
-      - name: Publier les rapports IA
+      # ── Agent 2 : Remediation CVE ─────────────────
+      - name: "Agent 2 — Remediation CVE"
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPO:       ${{ github.repository }}
+        working-directory: agent
+        run: python remediation_agent.py
+
+      # ── Agent 3 : Rapport explicatif ──────────────
+      - name: "Agent 3 — Rapport explicatif"
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        working-directory: agent
+        run: python explainer_agent.py
+        continue-on-error: true
+
+      - name: Publier rapports IA
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ai-reports
@@ -299,33 +279,27 @@ jobs:
             agent/ai-remediation-report.json
             agent/rapport-explicatif.md
 
-      - name: Afficher le résumé dans GitHub Actions
+      - name: Resume GitHub Actions
         if: always()
         run: |
-          echo "## Résumé Agent IA — Zero Trust Pipeline" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          if [ -f agent/ai-remediation-report.json ]; then
-            echo "### Corrections proposées par l'IA" >> $GITHUB_STEP_SUMMARY
-            python3 -c "
-          import json
-          try:
-            d = json.load(open('agent/ai-remediation-report.json'))
-            print(f'**Résumé :** {d.get(\"resume\", \"N/A\")}')
-            print(f'**Action urgente :** {d.get(\"action_immediate\", \"N/A\")}')
-            print('')
-            print('| CVE | Package | Priorité | Correction |')
-            print('|-----|---------|----------|------------|')
-            for v in d.get('vulnerabilites', []):
-              print(f'| {v.get(\"cve\",\"\")} | {v.get(\"package\",\"\")} | {v.get(\"priorite\",\"\")} | \`{v.get(\"correction_requirements\",\"\")}\` |')
-          except Exception as e:
-            print(f'Erreur lecture rapport : {e}')
-            " >> $GITHUB_STEP_SUMMARY
-          else
-            echo "Rapport non généré" >> $GITHUB_STEP_SUMMARY
-          fi
+          echo "## Rapport Agent IA" >> $GITHUB_STEP_SUMMARY
+          python3 -c "
+          import json, os
+          path = 'agent/ai-remediation-report.json'
+          if not os.path.exists(path):
+              print('Rapport non genere')
+          else:
+              d = json.load(open(path))
+              print(f'**Resume :** {d.get(\"resume\", \"N/A\")}')
+              print(f'**Action urgente :** {d.get(\"action_immediate\", \"N/A\")}')
+              print('| CVE | Package | Priorite | Correction |')
+              print('|-----|---------|----------|------------|')
+              for v in d.get('vulnerabilites', []):
+                  print(f'| {v.get(\"cve\",\"\")} | {v.get(\"package\",\"\")} | {v.get(\"priorite\",\"\")} | {v.get(\"correction_requirements\",\"\")} |')
+          " >> $GITHUB_STEP_SUMMARY
 
   # ─────────────────────────────────────────
-  # JOB 4 : Build de l'image Docker
+  # JOB 4 : Build Docker
   # ─────────────────────────────────────────
   docker-build:
     name: "4. Build Docker"
@@ -335,11 +309,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build image
-        run: |
-          docker build -t ${{ env.IMAGE_NAME }}:${{ github.sha }} .
-          echo "Image buildée : ${{ env.IMAGE_NAME }}:${{ github.sha }}"
+        run: docker build -t ${{ env.IMAGE_NAME }}:${{ github.sha }} .
 
-      - name: Sauvegarder l'image
+      - name: Sauvegarder image
         run: docker save ${{ env.IMAGE_NAME }}:${{ github.sha }} > image.tar
 
       - uses: actions/upload-artifact@v4
@@ -349,7 +321,7 @@ jobs:
           retention-days: 1
 
   # ─────────────────────────────────────────
-  # JOB 5 : Scanner l'image Docker avec Trivy
+  # JOB 5 : Scan image Docker
   # ─────────────────────────────────────────
   image-scan:
     name: "5. Scan image Docker"
@@ -362,10 +334,10 @@ jobs:
         with:
           name: docker-image
 
-      - name: Charger l'image Docker
+      - name: Charger image
         run: docker load < image.tar
 
-      - name: Scanner l'image
+      - name: Scanner image
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'image'
@@ -375,27 +347,17 @@ jobs:
           exit-code: '0'
 
   # ─────────────────────────────────────────
-  # JOB 6 : Signature Cosign (seulement sur main)
+  # JOB 6 : Signature Cosign (main seulement)
   # ─────────────────────────────────────────
   sign-image:
-    name: "6. Signature Cosign — Zero Trust"
+    name: "6. Signature Cosign"
     runs-on: ubuntu-latest
     needs: [image-scan]
     if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
-
-      - name: Installer Cosign
-        uses: sigstore/cosign-installer@v3
-
-      - name: Vérifier Cosign
-        run: cosign version
-
-      - name: Pipeline Zero Trust terminé
+      - uses: sigstore/cosign-installer@v3
+      - name: Pipeline Zero Trust complet
         run: |
-          echo "============================================"
-          echo "Pipeline Zero Trust complété avec succès !"
-          echo "Commit : ${{ github.sha }}"
-          echo "Image  : ${{ env.IMAGE_NAME }}:${{ github.sha }}"
-          echo "Mode IA: API Anthropic (CI/CD)"
-          echo "============================================"
+          cosign version
+          echo "Pipeline Zero Trust complete — commit ${{ github.sha }}"
