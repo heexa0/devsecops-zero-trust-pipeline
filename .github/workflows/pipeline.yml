@@ -53,7 +53,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v4
@@ -74,7 +74,7 @@ jobs:
           echo "Semgrep scan complete — findings saved to semgrep-report.json"
 
       - name: Upload Semgrep report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: semgrep-report
@@ -90,7 +90,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install Trivy
         run: |
@@ -111,7 +111,7 @@ jobs:
           echo "Trivy scan complete — findings saved to trivy-report.json"
 
       - name: Upload Trivy report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: trivy-report
@@ -129,7 +129,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Build Docker image
         run: |
@@ -198,7 +198,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v4
@@ -210,12 +210,12 @@ jobs:
 
       # Download the scan reports produced by jobs 1 and 2
       - name: Download Semgrep report
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: semgrep-report
 
       - name: Download Trivy report
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: trivy-report
 
@@ -225,7 +225,7 @@ jobs:
         run: python ai_agent.py
 
       - name: Upload AI report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: ai-report
@@ -244,10 +244,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Download AI report
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: ai-report
 
