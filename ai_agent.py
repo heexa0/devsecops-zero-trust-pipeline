@@ -189,7 +189,7 @@ def main():
     prompt = build_prompt(trivy_vulns, semgrep_findings)
 
     print("\n🤖 Sending Anthropic for security analysis...")
-    response = ask_gemini(prompt)
+    response = ask_anthropic(prompt)
 
     if not response:
         print("❌ No response from Anthropic — aborting")
