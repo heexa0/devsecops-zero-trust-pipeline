@@ -138,7 +138,7 @@ Then create a section for each vulnerability.
 
 # ─── Call Claude API ──────────────────────────────────────────────────────────
 
-def ask_gemini(prompt):
+def ask_anthropic(prompt):
     """
     Send the security prompt to Claude (claude-sonnet-4-5) and return the response text.
     Uses the Anthropic SDK client syntax.
@@ -188,11 +188,11 @@ def main():
 
     prompt = build_prompt(trivy_vulns, semgrep_findings)
 
-    print("\n🤖 Sending to Gemini for security analysis...")
+    print("\n🤖 Sending Anthropic for security analysis...")
     response = ask_gemini(prompt)
 
     if not response:
-        print("❌ No response from Gemini — aborting")
+        print("❌ No response from Anthropic — aborting")
         exit(1)
 
     save_report(response)
