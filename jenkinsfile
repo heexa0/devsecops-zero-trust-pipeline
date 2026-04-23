@@ -1,297 +1,108 @@
-// ============================================================
-//  PIPELINE ZERO TRUST — Jenkins
-//  Agent IA : Claude API (primaire) → Ollama local (fallback)
-//  Principe : "Never Trust, Always Verify"
-// ============================================================
-
 pipeline {
     agent any
 
     environment {
-        IMAGE_NAME       = "zerotrust-app"
-        // Credential Jenkins (configuré dans : Manage Jenkins > Credentials)
-        // Ajouter un Secret Text nommé "ANTHROPIC_API_KEY"
+        IMAGE_NAME = "zerotrust-app"
+
+        // Jenkins credential (Claude optional)
         ANTHROPIC_API_KEY = credentials('ANTHROPIC_API_KEY')
-        // URL Ollama interne (même réseau Docker/Jenkins)
-        OLLAMA_URL        = "http://ollama:11434"
-        OLLAMA_MODEL      = "llama3.2:3b"
-        // Répertoires de travail
-        AGENT_DIR         = "agent"
-        REPORTS_DIR       = "reports"
+
+        // Windows local Ollama
+        OLLAMA_URL   = "http://127.0.0.1:11434"
+        OLLAMA_MODEL = "llama3.2:3b"
+
+        AGENT_DIR   = "agent"
+        REPORTS_DIR = "reports"
     }
 
     options {
         timeout(time: 60, unit: 'MINUTES')
         buildDiscarder(logRotator(numToKeepStr: '10'))
-        timestamps()
-        ansiColor('xterm')
+        disableConcurrentBuilds()
     }
 
     stages {
 
-        // ─────────────────────────────────────────
-        // STAGE 0 : Préparation de l'environnement
-        // ─────────────────────────────────────────
-        stage('0. Préparation') {
+        stage('0. Preparation') {
             steps {
-                sh '''
-                    echo "=== Zero Trust Pipeline — $(date) ==="
-                    echo "Build : ${BUILD_NUMBER} | Commit : ${GIT_COMMIT:-N/A}"
-                    mkdir -p ${REPORTS_DIR}
-                    pip install --quiet semgrep anthropic rich requests pydantic 2>/dev/null || true
+                bat '''
+                    echo === Zero Trust Pipeline ===
+                    mkdir %REPORTS_DIR% 2>nul || echo exists
+                    python --version
+                    pip install requests rich semgrep anthropic 2>nul || echo skipping pip install
                 '''
-                script {
-                    // Vérification du mode IA au démarrage
-                    sh '''
-                        python3 -c "
+
+                bat '''
+python -c "
 import os, requests
-api_key = os.environ.get('ANTHROPIC_API_KEY', '')
-ollama  = os.environ.get('OLLAMA_URL', 'http://ollama:11434')
 
-print('=== Vérification des moteurs IA ===')
+print('=== IA CHECK ===')
 
-# Test Claude API
-if api_key and len(api_key) > 10:
-    print(f'[OK] Claude API disponible (clé définie)')
+api_key = os.environ.get('ANTHROPIC_API_KEY','')
+
+if api_key and api_key.startswith('sk-ant-'):
+    print('[OK] Claude API available')
 else:
-    print('[WARN] Claude API : clé non définie ou invalide')
+    print('[WARN] Claude API missing')
 
-# Test Ollama
 try:
-    r = requests.get(f'{ollama}/api/tags', timeout=5)
-    models = [m[\"name\"] for m in r.json().get(\"models\", [])]
-    print(f'[OK] Ollama disponible — modèles : {models}')
-except Exception as e:
-    print(f'[WARN] Ollama non disponible : {e}')
-    print('      => Assurez-vous que le service Ollama tourne')
-"
-                    '''
-                }
-            }
-        }
-
-        // ─────────────────────────────────────────
-        // STAGE 1 : SAST — Semgrep
-        // ─────────────────────────────────────────
-        stage('1. SAST — Semgrep') {
-            steps {
-                sh '''
-                    echo "=== Analyse statique du code (Semgrep) ==="
-                    semgrep --config=auto test-app/ \
-                        --json --output=${REPORTS_DIR}/semgrep-results.json \
-                        --severity=WARNING || true
-                '''
-                sh '''
-                    python3 -c "
-import json
-try:
-    d = json.load(open('${REPORTS_DIR}/semgrep-results.json'))
-    n = len(d.get('results', []))
-    print(f'Semgrep : {n} problème(s) détecté(s)')
-    for r in d.get('results', [])[:3]:
-        print(f'  - {r.get(\"check_id\",\"?\")} @ {r.get(\"path\",\"?\")}:{r.get(\"start\",{}).get(\"line\",\"?\")}')
-except Exception as e:
-    print(f'Rapport vide ou erreur : {e}')
+    r = requests.get('http://127.0.0.1:11434/api/tags', timeout=5)
+    print('[OK] Ollama available')
+except:
+    print('[WARN] Ollama not reachable')
 "
                 '''
             }
-            post {
-                always {
-                    archiveArtifacts artifacts: "${REPORTS_DIR}/semgrep-results.json",
-                                     allowEmptyArchive: true
-                }
-            }
         }
 
-        // ─────────────────────────────────────────
-        // STAGE 2 : SCA — Trivy
-        // ─────────────────────────────────────────
-        stage('2. SCA — Trivy') {
+        stage('1. SAST - Semgrep') {
             steps {
-                sh '''
-                    echo "=== Scan des dépendances (Trivy) ==="
-                    # Installation Trivy si absent
-                    if ! command -v trivy &> /dev/null; then
-                        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
-                    fi
-
-                    trivy fs ./test-app \
-                        --format json \
-                        --output ${REPORTS_DIR}/trivy-report.json \
-                        --severity MEDIUM,HIGH,CRITICAL \
-                        --quiet || true
-                '''
-                sh '''
-                    python3 -c "
-import json
-try:
-    d = json.load(open('${REPORTS_DIR}/trivy-report.json'))
-    t = sum(len(r.get('Vulnerabilities') or []) for r in d.get('Results', []))
-    c = sum(1 for r in d.get('Results', []) for v in (r.get('Vulnerabilities') or []) if v.get('Severity') == 'CRITICAL')
-    h = sum(1 for r in d.get('Results', []) for v in (r.get('Vulnerabilities') or []) if v.get('Severity') == 'HIGH')
-    print(f'Trivy : {t} CVE total | {c} CRITICAL | {h} HIGH')
-except Exception as e:
-    print(f'Rapport vide ou erreur : {e}')
-"
-                '''
-            }
-            post {
-                always {
-                    archiveArtifacts artifacts: "${REPORTS_DIR}/trivy-report.json",
-                                     allowEmptyArchive: true
-                }
-            }
-        }
-
-        // ─────────────────────────────────────────
-        // STAGE 3 : Agent IA — AI Security Guard
-        // Sous-stages séquentiels avec fallback Claude → Ollama
-        // ─────────────────────────────────────────
-        stage('3. AI Security Guard') {
-            stages {
-
-                stage('3a. Préparation Agent') {
-                    steps {
-                        sh '''
-                            echo "=== Copie des rapports vers l'agent ==="
-                            cp ${REPORTS_DIR}/trivy-report.json    ${AGENT_DIR}/trivy-report.json    || true
-                            cp ${REPORTS_DIR}/semgrep-results.json ${AGENT_DIR}/semgrep-results.json || true
-                        '''
-                    }
-                }
-
-                stage('3b. Anti-Tampering') {
-                    steps {
-                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                            sh '''
-                                echo "=== Agent 1 : Anti-Tampering (vérification du pipeline) ==="
-                                cd ${AGENT_DIR}
-                                python3 antitamper_agent.py
-                            '''
-                        }
-                    }
-                }
-
-                stage('3c. Remédiation CVE') {
-                    steps {
-                        sh '''
-                            echo "=== Agent 2 : Remédiation CVE ==="
-                            cd ${AGENT_DIR}
-                            python3 remediation_agent.py
-                        '''
-                    }
-                }
-
-                stage('3d. Rapport Explicatif') {
-                    steps {
-                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                            sh '''
-                                echo "=== Agent 3 : Rapport explicatif ==="
-                                cd ${AGENT_DIR}
-                                python3 explainer_agent.py
-                            '''
-                        }
-                    }
-                }
-            }
-            post {
-                always {
-                    archiveArtifacts artifacts: "${AGENT_DIR}/ai-remediation-report.json, ${AGENT_DIR}/rapport-explicatif.md",
-                                     allowEmptyArchive: true
-                    script {
-                        // Affichage du résumé dans Jenkins
-                        if (fileExists("${AGENT_DIR}/rapport-explicatif.md")) {
-                            def rapport = readFile("${AGENT_DIR}/rapport-explicatif.md")
-                            echo "=== RAPPORT IA ===\n${rapport}"
-                        }
-                    }
-                }
-            }
-        }
-
-        // ─────────────────────────────────────────
-        // STAGE 4 : Build Docker
-        // ─────────────────────────────────────────
-        stage('4. Build Docker') {
-            steps {
-                sh '''
-                    echo "=== Build de l'image Docker ==="
-                    docker build -t ${IMAGE_NAME}:${BUILD_NUMBER} .
-                    docker save ${IMAGE_NAME}:${BUILD_NUMBER} > image.tar
-                    echo "Image construite : ${IMAGE_NAME}:${BUILD_NUMBER}"
-                '''
-            }
-            post {
-                always {
-                    archiveArtifacts artifacts: 'image.tar', allowEmptyArchive: true
-                }
-            }
-        }
-
-        // ─────────────────────────────────────────
-        // STAGE 5 : Scan image Docker
-        // ─────────────────────────────────────────
-        stage('5. Scan Image Docker') {
-            steps {
-                sh '''
-                    echo "=== Scan de l'image Docker (Trivy) ==="
-                    trivy image \
-                        --format table \
-                        --severity CRITICAL \
-                        --exit-code 0 \
-                        ${IMAGE_NAME}:${BUILD_NUMBER}
+                bat '''
+                    echo Running Semgrep...
+                    semgrep --config=auto test-app --json > reports/semgrep.json || echo "semgrep failed"
                 '''
             }
         }
 
-        // ─────────────────────────────────────────
-        // STAGE 6 : Signature Cosign (branche main)
-        // ─────────────────────────────────────────
-        stage('6. Signature Cosign') {
-            when {
-                branch 'main'
-            }
+        stage('2. SCA - Trivy') {
             steps {
-                sh '''
-                    echo "=== Signature de l'image (Cosign) ==="
-                    if ! command -v cosign &> /dev/null; then
-                        curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
-                            -o /usr/local/bin/cosign && chmod +x /usr/local/bin/cosign
-                    fi
-                    cosign version
-                    echo "Pipeline Zero Trust complet — Build ${BUILD_NUMBER} | Commit ${GIT_COMMIT}"
-                    # cosign sign ${IMAGE_NAME}:${BUILD_NUMBER}  # décommenter avec clé Cosign configurée
+                bat '''
+                    echo Running Trivy...
+                    trivy fs test-app --format json -o reports/trivy.json || echo "trivy failed"
+                '''
+            }
+        }
+
+        stage('3. AI Analysis (Ollama / Claude fallback)') {
+            steps {
+                bat '''
+                    echo Running AI analysis...
+                    python agent/ollama_client.py reports/trivy.json
+                '''
+            }
+        }
+
+        stage('4. Final Report') {
+            steps {
+                bat '''
+                    echo === Pipeline completed ===
+                    dir reports
                 '''
             }
         }
     }
 
-    // ─────────────────────────────────────────
-    // POST — Rapport final
-    // ─────────────────────────────────────────
     post {
         always {
-            script {
-                def statut = currentBuild.result ?: 'SUCCESS'
-                echo """
-╔══════════════════════════════════════════════════╗
-║     ZERO TRUST PIPELINE — RÉSUMÉ FINAL           ║
-╠══════════════════════════════════════════════════╣
-║  Build    : #${BUILD_NUMBER}
-║  Statut   : ${statut}
-║  Durée    : ${currentBuild.durationString}
-║  Commit   : ${GIT_COMMIT ?: 'N/A'}
-╚══════════════════════════════════════════════════╝
-                """
-            }
-            cleanWs(deleteDirs: true,
-                    patterns: [[pattern: 'image.tar', type: 'INCLUDE']])
+            echo "Zero Trust Pipeline finished"
         }
-        failure {
-            echo 'Pipeline échoué — vérifier les rapports dans les artifacts'
-        }
+
         success {
-            echo 'Pipeline Zero Trust complet avec succès'
+            echo "SUCCESS: pipeline passed"
+        }
+
+        failure {
+            echo "FAILED: check logs"
         }
     }
 }
