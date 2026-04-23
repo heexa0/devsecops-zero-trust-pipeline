@@ -1,0 +1,19 @@
+# ---------------------------------------------------------------------------
+# Deliberately pinned to old, vulnerable versions for CVE detection demos.
+# DO NOT use these versions in real projects.
+#
+# Known CVEs targeted:
+#   flask==2.0.1         CVE-2023-30861  (open redirect / session cookie leak)
+#   requests==2.18.0     CVE-2018-18074  (credential exposure via redirect)
+#   pyyaml==5.1          CVE-2020-14343  (arbitrary code execution via load())
+#   Jinja2==3.1.3        CVE-2024-34064  (XSS via xmlattr filter, fixed in 3.1.4)
+#   cryptography==2.6    CVE-2020-25659  (Bleichenbacher timing oracle in RSA)
+#   Werkzeug==2.0.0      CVE-2022-29361  (open redirect in debugger)
+# ---------------------------------------------------------------------------
+
+flask==2.0.1
+requests==2.18.0
+pyyaml==5.1
+Jinja2==3.1.3
+cryptography==2.6
+Werkzeug==2.0.0

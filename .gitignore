@@ -205,3 +205,12 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+.env
+
+# ─── DevSecOps Zero Trust Pipeline ───────────────────────────────────────────
+# Scan reports contain sensitive vulnerability details — never commit these
+*-report.json
+ai-report.md
+
+# Internal security rules
+rules.yaml
