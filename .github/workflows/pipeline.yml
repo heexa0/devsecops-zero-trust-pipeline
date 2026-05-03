@@ -174,21 +174,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Set build context and image tag based on target app.
-      # vulnerable: Dockerfile at root, context = .
-      # secure-app: Dockerfile at secure-app/Dockerfile, context = secure-app/
+      # Set build context, Dockerfile path, and image tag based on target app.
+      # vulnerable : Dockerfile at repo root,          context = .
+      # secure-app : Dockerfile at secure-app/Dockerfile, context = secure-app (no trailing slash)
       - name: Set build paths and image tag
         run: |
-          TARGET="${{ env.TARGET_APP }}"
-          IMAGE="ghcr.io/${{ github.repository }}/${TARGET}:latest"
-          if [ "$TARGET" = "secure-app" ]; then
+          if [ "${{ env.TARGET_APP }}" = "secure-app" ]; then
             echo "DOCKERFILE=secure-app/Dockerfile" >> $GITHUB_ENV
-            echo "BUILD_CONTEXT=secure-app/" >> $GITHUB_ENV
+            echo "BUILD_CONTEXT=secure-app" >> $GITHUB_ENV
+            echo "IMAGE_REF=ghcr.io/${{ github.repository }}/secure-app:latest" >> $GITHUB_ENV
           else
             echo "DOCKERFILE=Dockerfile" >> $GITHUB_ENV
             echo "BUILD_CONTEXT=." >> $GITHUB_ENV
+            echo "IMAGE_REF=ghcr.io/${{ github.repository }}/devsecops-app:latest" >> $GITHUB_ENV
           fi
-          echo "IMAGE_REF=$IMAGE" >> $GITHUB_ENV
 
       # Tag directly with the ghcr.io path — Cosign requires a registry-hosted image
       - name: Build Docker image
