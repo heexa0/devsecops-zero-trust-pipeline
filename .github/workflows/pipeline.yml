@@ -35,11 +35,23 @@ on:
     branches: ["feature/security-pipeline"]
   pull_request:
     branches: ["feature/security-pipeline"]
+  workflow_dispatch:
+    inputs:
+      target_app:
+        description: "Application to scan (app = vulnerable, secure-app = hardened)"
+        required: false
+        default: "app"
+        type: choice
+        options:
+          - app
+          - secure-app
 
 env:
   PYTHON_VERSION: "3.11"
   APP_NAME: "devsecops-app"
   IMAGE_NAME: "devsecops-app:latest"
+  # Resolved at runtime: push/PR defaults to 'app', workflow_dispatch uses the input
+  TARGET_APP: ${{ inputs.target_app || 'app' }}
 
 # =============================================================================
 # JOB 1 — SAST: Static Application Security Testing via Semgrep
@@ -65,13 +77,22 @@ jobs:
 
       # continue-on-error: true ensures the report is always uploaded
       # even when Semgrep finds vulnerabilities (non-zero exit code)
+      # Resolve scan directory: vulnerable app lives at app/, secure at secure-app/app/
+      - name: Set scan target paths
+        run: |
+          if [ "${{ env.TARGET_APP }}" = "secure-app" ]; then
+            echo "SCAN_DIR=secure-app/app/" >> $GITHUB_ENV
+          else
+            echo "SCAN_DIR=app/" >> $GITHUB_ENV
+          fi
+
       - name: Run Semgrep scan
         continue-on-error: true
         run: |
-          semgrep --config auto app/ \
+          semgrep --config auto "$SCAN_DIR" \
             --json \
             --output semgrep-report.json
-          echo "Semgrep scan complete — findings saved to semgrep-report.json"
+          echo "Semgrep scan complete on $SCAN_DIR — findings saved to semgrep-report.json"
 
       - name: Upload Semgrep report
         uses: actions/upload-artifact@v4
@@ -98,17 +119,26 @@ jobs:
           sudo mv ./bin/trivy /usr/local/bin/trivy
           trivy --version
 
+      # Resolve scan directory: vulnerable app lives at app/, secure at secure-app/app/
+      - name: Set scan target paths
+        run: |
+          if [ "${{ env.TARGET_APP }}" = "secure-app" ]; then
+            echo "SCAN_DIR=secure-app/app/" >> $GITHUB_ENV
+          else
+            echo "SCAN_DIR=app/" >> $GITHUB_ENV
+          fi
+
       # exit-code 0 so the pipeline continues and produces the report
       # even when HIGH/CRITICAL CVEs are found
       - name: Run Trivy filesystem scan
         continue-on-error: true
         run: |
-          trivy fs app/ \
+          trivy fs "$SCAN_DIR" \
             --format json \
             --output trivy-report.json \
             --severity HIGH,CRITICAL \
             --exit-code 0
-          echo "Trivy scan complete — findings saved to trivy-report.json"
+          echo "Trivy scan complete on $SCAN_DIR — findings saved to trivy-report.json"
 
       - name: Upload Trivy report
         uses: actions/upload-artifact@v4
@@ -144,15 +174,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Set build context and image tag based on target app.
+      # vulnerable: Dockerfile at root, context = .
+      # secure-app: Dockerfile at secure-app/Dockerfile, context = secure-app/
+      - name: Set build paths and image tag
+        run: |
+          TARGET="${{ env.TARGET_APP }}"
+          IMAGE="ghcr.io/${{ github.repository }}/${TARGET}:latest"
+          if [ "$TARGET" = "secure-app" ]; then
+            echo "DOCKERFILE=secure-app/Dockerfile" >> $GITHUB_ENV
+            echo "BUILD_CONTEXT=secure-app/" >> $GITHUB_ENV
+          else
+            echo "DOCKERFILE=Dockerfile" >> $GITHUB_ENV
+            echo "BUILD_CONTEXT=." >> $GITHUB_ENV
+          fi
+          echo "IMAGE_REF=$IMAGE" >> $GITHUB_ENV
+
       # Tag directly with the ghcr.io path — Cosign requires a registry-hosted image
       - name: Build Docker image
         run: |
-          docker build -t ghcr.io/${{ github.repository }}/devsecops-app:latest .
-          echo "Docker image built: ghcr.io/${{ github.repository }}/devsecops-app:latest"
+          docker build -t "$IMAGE_REF" -f "$DOCKERFILE" "$BUILD_CONTEXT"
+          echo "Docker image built: $IMAGE_REF"
 
       - name: Push image to GitHub Container Registry
         run: |
-          docker push ghcr.io/${{ github.repository }}/devsecops-app:latest
+          docker push "$IMAGE_REF"
 
       - name: Install Trivy
         run: |
@@ -163,7 +209,7 @@ jobs:
       - name: Scan Docker image with Trivy
         continue-on-error: true
         run: |
-          trivy image ghcr.io/${{ github.repository }}/devsecops-app:latest \
+          trivy image "$IMAGE_REF" \
             --severity HIGH,CRITICAL \
             --format table \
             --exit-code 0
@@ -172,8 +218,9 @@ jobs:
         run: |
           echo "============================================"
           echo "  Docker image scan complete"
-          echo "  Image : ghcr.io/${{ github.repository }}/devsecops-app:latest"
-          echo "  Scope : HIGH and CRITICAL findings only"
+          echo "  Target : ${{ env.TARGET_APP }}"
+          echo "  Image  : $IMAGE_REF"
+          echo "  Scope  : HIGH and CRITICAL findings only"
           echo "  See table output above for full details"
           echo "============================================"
 
@@ -194,7 +241,7 @@ jobs:
         run: |
           cosign sign --yes \
             --rekor-url https://rekor.sigstore.dev \
-            ghcr.io/${{ github.repository }}/devsecops-app:latest
+            "$IMAGE_REF"
 
       # Verify the signature we just created to confirm the signing round-trip.
       # In a real pipeline this step would run in the deploy job against the
@@ -202,7 +249,7 @@ jobs:
       - name: Verify image signature
         continue-on-error: true
         run: |
-          cosign verify ghcr.io/${{ github.repository }}/devsecops-app:latest \
+          cosign verify "$IMAGE_REF" \
             --certificate-identity-regexp=".*" \
             --certificate-oidc-issuer-regexp=".*"
 
@@ -241,10 +288,14 @@ jobs:
         with:
           name: trivy-report
 
-      # ai_agent.py reads both JSON files, calls Claude, writes ai-report.md
+      # Pass --mode so Claude adjusts its analysis:
+      #   vulnerable → list risks and remediations
+      #   secure     → confirm protections in place, validate the fixes
       - name: Run AI Security Agent
         continue-on-error: true
-        run: python ai_agent.py
+        run: |
+          MODE=$([ "${{ env.TARGET_APP }}" = "secure-app" ] && echo "secure" || echo "vulnerable")
+          python ai_agent.py --mode "$MODE"
 
       - name: Upload AI report
         uses: actions/upload-artifact@v4
@@ -273,6 +324,55 @@ jobs:
         continue-on-error: true
         with:
           name: ai-report
+
+      # Also download Semgrep + Trivy reports to build the comparison table
+      - name: Download Semgrep report
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: semgrep-report
+
+      - name: Download Trivy report
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: trivy-report
+
+      - name: Print comparison summary
+        run: |
+          TARGET="${{ env.TARGET_APP }}"
+
+          # Count Semgrep findings
+          if [ -f semgrep-report.json ]; then
+            SEMGREP=$(python3 -c "import json; d=json.load(open('semgrep-report.json')); print(len(d.get('results', [])))")
+          else
+            SEMGREP="N/A"
+          fi
+
+          # Count Trivy HIGH/CRITICAL CVEs
+          if [ -f trivy-report.json ]; then
+            TRIVY=$(python3 -c "import json; d=json.load(open('trivy-report.json')); print(sum(len(r.get('Vulnerabilities') or []) for r in d.get('Results', [])))")
+          else
+            TRIVY="N/A"
+          fi
+
+          echo ""
+          echo "╔══════════════════════════════════════════════╗"
+          echo "║         SCAN COMPARISON SUMMARY              ║"
+          echo "╠══════════════════════════════════════════════╣"
+          echo "║  Target app   : $TARGET"
+          echo "╠══════════════════════════════════════════════╣"
+          echo "║  Metric                  │  Result           ║"
+          echo "╠══════════════════════════════════════════════╣"
+          echo "║  Semgrep SAST findings   │  $SEMGREP"
+          echo "║  Trivy CVEs (H/C)        │  $TRIVY"
+          echo "╚══════════════════════════════════════════════╝"
+          echo ""
+          if [ "$TARGET" = "secure-app" ]; then
+            echo "✅ Secure baseline — expected: 0 findings, 0 CVEs"
+          else
+            echo "⚠️  Vulnerable baseline — findings above are intentional"
+          fi
 
       - name: Print full AI security report
         run: |

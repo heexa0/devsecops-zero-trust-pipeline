@@ -1,0 +1,6 @@
+# Minimal, up-to-date dependencies — smaller attack surface, no known HIGH/CRITICAL CVEs.
+# Jinja2 and Werkzeug are bundled with Flask — no need to pin them separately.
+# gunicorn replaces the Flask dev server as the production WSGI entrypoint.
+
+flask==3.1.1
+gunicorn==23.0.0
