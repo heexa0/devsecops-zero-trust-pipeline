@@ -189,13 +189,37 @@ jobs:
             echo "IMAGE_REF=ghcr.io/${{ github.repository }}/devsecops-app:latest" >> $GITHUB_ENV
           fi
 
+      # Debug step — confirms the $GITHUB_ENV vars resolved correctly before build
+      - name: Debug build paths
+        run: |
+          echo "TARGET_APP    = ${{ env.TARGET_APP }}"
+          echo "DOCKERFILE    = ${{ env.DOCKERFILE }}"
+          echo "BUILD_CONTEXT = ${{ env.BUILD_CONTEXT }}"
+          echo "IMAGE_REF     = ${{ env.IMAGE_REF }}"
+          echo "--- Workspace root contents ---"
+          ls -la
+          echo "--- secure-app/ contents ---"
+          ls -la secure-app/ || echo "secure-app/ not found"
+          echo "--- secure-app/Dockerfile exists? ---"
+          test -f secure-app/Dockerfile && echo "YES" || echo "NO - FILE MISSING"
+
+      # $GITHUB_ENV values are available as env context (${{ env.VAR }}) in subsequent
+      # steps, but NOT as bare shell variables ($VAR) unless injected via env: block.
+      # Each step below declares an explicit env: block to guarantee correct resolution.
+
       # Tag directly with the ghcr.io path — Cosign requires a registry-hosted image
       - name: Build Docker image
+        env:
+          DOCKERFILE: ${{ env.DOCKERFILE }}
+          BUILD_CONTEXT: ${{ env.BUILD_CONTEXT }}
+          IMAGE_REF: ${{ env.IMAGE_REF }}
         run: |
+          echo "Building: docker build -t $IMAGE_REF -f $DOCKERFILE $BUILD_CONTEXT"
           docker build -t "$IMAGE_REF" -f "$DOCKERFILE" "$BUILD_CONTEXT"
-          echo "Docker image built: $IMAGE_REF"
 
       - name: Push image to GitHub Container Registry
+        env:
+          IMAGE_REF: ${{ env.IMAGE_REF }}
         run: |
           docker push "$IMAGE_REF"
 
@@ -207,6 +231,8 @@ jobs:
       # Scans the built image layers — finds OS CVEs, misconfigs, root user, etc.
       - name: Scan Docker image with Trivy
         continue-on-error: true
+        env:
+          IMAGE_REF: ${{ env.IMAGE_REF }}
         run: |
           trivy image "$IMAGE_REF" \
             --severity HIGH,CRITICAL \
@@ -218,7 +244,7 @@ jobs:
           echo "============================================"
           echo "  Docker image scan complete"
           echo "  Target : ${{ env.TARGET_APP }}"
-          echo "  Image  : $IMAGE_REF"
+          echo "  Image  : ${{ env.IMAGE_REF }}"
           echo "  Scope  : HIGH and CRITICAL findings only"
           echo "  See table output above for full details"
           echo "============================================"
@@ -237,6 +263,7 @@ jobs:
         env:
           COSIGN_EXPERIMENTAL: "1"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_REF: ${{ env.IMAGE_REF }}
         run: |
           cosign sign --yes \
             --rekor-url https://rekor.sigstore.dev \
@@ -247,6 +274,8 @@ jobs:
       # registry-pushed image before any workload is allowed to start.
       - name: Verify image signature
         continue-on-error: true
+        env:
+          IMAGE_REF: ${{ env.IMAGE_REF }}
         run: |
           cosign verify "$IMAGE_REF" \
             --certificate-identity-regexp=".*" \
