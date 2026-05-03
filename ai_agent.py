@@ -7,6 +7,7 @@ and generates a structured markdown remediation report.
 """
 
 import os
+import sys
 import json
 import argparse
 from datetime import datetime
@@ -16,14 +17,13 @@ import anthropic
 
 # ─── Load environment variables ───────────────────────────────────────────────
 
-load_dotenv()
+# Only load .env in local development — in CI the secret is injected directly
+# as a process environment variable. Loading dotenv unconditionally can
+# overwrite a valid CI secret with an empty/missing local .env value.
+if os.path.exists(".env"):
+    load_dotenv()
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-if not ANTHROPIC_API_KEY:
-    print("❌ ANTHROPIC_API_KEY is missing. Create a .env file with ANTHROPIC_API_KEY=sk-ant-...")
-    exit(1)
-
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
 
 
 # ─── Parse Trivy report ───────────────────────────────────────────────────────
@@ -199,6 +199,10 @@ def save_report(response, output_file="ai-report.md"):
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        print("ERROR: ANTHROPIC_API_KEY environment variable is not set")
+        sys.exit(1)
+
     parser = argparse.ArgumentParser(description="AI Security Agent")
     parser.add_argument(
         "--mode",
