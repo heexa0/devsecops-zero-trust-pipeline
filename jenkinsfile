@@ -73,13 +73,11 @@ print(f'Semgrep : {len(d.get(\"results\",[]))} probleme(s)')"
         }
 
         stage('3. AI Security Guard') {
-            steps {
-                sh 'cp ${REPORTS_DIR}/trivy-report.json agent/ || true'
-                sh 'cp ${REPORTS_DIR}/semgrep-results.json agent/ || true'
-            }
             stages {
                 stage('3a. Anti-Tampering') {
                     steps {
+                        sh 'cp ${REPORTS_DIR}/trivy-report.json agent/ || true'
+                        sh 'cp ${REPORTS_DIR}/semgrep-results.json agent/ || true'
                         catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
                             sh 'cd agent && python3 antitamper_agent.py'
                         }
