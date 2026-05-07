@@ -1,0 +1,13 @@
+# devsecops-zero-trust-pipeline/jenkins/plugins.txt
+workflow-aggregator        # Pipeline as Code (obligatoire)
+git                        # Intégration Git / GitHub
+github                     # Webhook GitHub → Jenkins
+pipeline-stage-view        # Vue graphique des stages
+ansicolor                  # Logs colorés dans la console
+timestamper                # Horodatage des logs
+credentials-binding        # Injecter ANTHROPIC_API_KEY dans le pipeline
+configuration-as-code      # Charge casc.yaml automatiquement
+build-timeout              # Timeout de sécurité sur les builds
+workspace-cleanup          # Nettoyage du workspace après build
+docker-workflow            # Commandes Docker dans le pipeline
+blueocean                  # Interface moderne (optionnel mais joli)

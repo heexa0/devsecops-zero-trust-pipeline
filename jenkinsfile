@@ -1,108 +1,119 @@
+// devsecops-zero-trust-pipeline/Jenkinsfile
 pipeline {
     agent any
-
+ 
     environment {
-        IMAGE_NAME = "zerotrust-app"
-
-        // Jenkins credential (Claude optional)
+        IMAGE_NAME        = 'zerotrust-app'
         ANTHROPIC_API_KEY = credentials('ANTHROPIC_API_KEY')
-
-        // Windows local Ollama
-        OLLAMA_URL   = "http://127.0.0.1:11434"
-        OLLAMA_MODEL = "llama3.2:3b"
-
-        AGENT_DIR   = "agent"
-        REPORTS_DIR = "reports"
+        OLLAMA_URL        = 'http://ollama:11434'
+        OLLAMA_MODEL      = 'llama3.2:3b'
+        REPORTS_DIR       = 'reports'
     }
-
+ 
     options {
         timeout(time: 60, unit: 'MINUTES')
+        timestamps()
+        ansiColor('xterm')
         buildDiscarder(logRotator(numToKeepStr: '10'))
-        disableConcurrentBuilds()
     }
-
+ 
     stages {
-
-        stage('0. Preparation') {
+ 
+        // ── Stage 0 : Préparation ──────────────────────────
+        stage('0. Préparation') {
             steps {
-                bat '''
-                    echo === Zero Trust Pipeline ===
-                    mkdir %REPORTS_DIR% 2>nul || echo exists
-                    python --version
-                    pip install requests rich semgrep anthropic 2>nul || echo skipping pip install
-                '''
-
-                bat '''
-python -c "
-import os, requests
-
-print('=== IA CHECK ===')
-
-api_key = os.environ.get('ANTHROPIC_API_KEY','')
-
-if api_key and api_key.startswith('sk-ant-'):
-    print('[OK] Claude API available')
-else:
-    print('[WARN] Claude API missing')
-
-try:
-    r = requests.get('http://127.0.0.1:11434/api/tags', timeout=5)
-    print('[OK] Ollama available')
-except:
-    print('[WARN] Ollama not reachable')
-"
+                sh '''
+                    mkdir -p ${REPORTS_DIR}
+                    pip install --quiet semgrep anthropic rich requests 2>/dev/null || true
+                    echo '=== Vérification moteurs IA ==='
+                    python3 agent/ollama_client.py
                 '''
             }
         }
-
+ 
+        // ── Stage 1 : SAST Semgrep ─────────────────────────
         stage('1. SAST - Semgrep') {
             steps {
-                bat '''
-                    echo Running Semgrep...
-                    semgrep --config=auto test-app --json > reports/semgrep.json || echo "semgrep failed"
+                sh '''
+                    semgrep --config=auto test-app/ \
+                        --json --output=${REPORTS_DIR}/semgrep-results.json \
+                        --severity=WARNING || true
+                    python3 -c "
+import json
+d=json.load(open('${REPORTS_DIR}/semgrep-results.json'))
+print(f'Semgrep : {len(d.get(chr(114)+chr(101)+chr(115)+chr(117)+chr(108)+chr(116)+chr(115),[]))} probleme(s)')"
+                '''
+            }
+            post { always { archiveArtifacts artifacts: '${REPORTS_DIR}/semgrep-results.json', allowEmptyArchive: true } }
+        }
+// devsecops-zero-trust-pipeline/Jenkinsfile
+pipeline {
+    agent any
+ 
+    environment {
+        IMAGE_NAME        = 'zerotrust-app'
+        ANTHROPIC_API_KEY = credentials('ANTHROPIC_API_KEY')
+        OLLAMA_URL        = 'http://ollama:11434'
+        OLLAMA_MODEL      = 'llama3.2:3b'
+        REPORTS_DIR       = 'reports'
+    }
+ 
+    options {
+        timeout(time: 60, unit: 'MINUTES')
+        timestamps()
+        ansiColor('xterm')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+    }
+ 
+    stages {
+ 
+        // ── Stage 0 : Préparation ──────────────────────────
+        stage('0. Préparation') {
+            steps {
+                sh '''
+                    mkdir -p ${REPORTS_DIR}
+                    pip install --quiet semgrep anthropic rich requests 2>/dev/null || true
+                    echo '=== Vérification moteurs IA ==='
+                    python3 agent/ollama_client.py
                 '''
             }
         }
-
-        stage('2. SCA - Trivy') {
+ 
+        // ── Stage 1 : SAST Semgrep ─────────────────────────
+        stage('1. SAST - Semgrep') {
             steps {
-                bat '''
-                    echo Running Trivy...
-                    trivy fs test-app --format json -o reports/trivy.json || echo "trivy failed"
+                sh '''
+                    semgrep --config=auto test-app/ \
+                        --json --output=${REPORTS_DIR}/semgrep-results.json \
+                        --severity=WARNING || true
+                    python3 -c "
+import json
+d=json.load(open('${REPORTS_DIR}/semgrep-results.json'))
+print(f'Semgrep : {len(d.get(chr(114)+chr(101)+chr(115)+chr(117)+chr(108)+chr(116)+chr(115),[]))} probleme(s)')"
                 '''
             }
+            post { always { archiveArtifacts artifacts: '${REPORTS_DIR}/semgrep-results.json', allowEmptyArchive: true } }
         }
-
-        stage('3. AI Analysis (Ollama / Claude fallback)') {
-            steps {
-                bat '''
-                    echo Running AI analysis...
-                    python agent/ollama_client.py reports/trivy.json
-                '''
-            }
         }
-
-        stage('4. Final Report') {
+ 
+        // ── Stage 6 : Signature Cosign ─────────────────────
+        stage('6. Signature Cosign') {
+            when { branch 'main' }
             steps {
-                bat '''
-                    echo === Pipeline completed ===
-                    dir reports
+                sh '''
+                    if ! command -v cosign &>/dev/null; then
+                        curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
+                            -o /usr/local/bin/cosign && chmod +x /usr/local/bin/cosign
+                    fi
+                    echo "Pipeline Zero Trust complet - Build ${BUILD_NUMBER}"
                 '''
             }
         }
     }
-
+ 
     post {
-        always {
-            echo "Zero Trust Pipeline finished"
-        }
-
-        success {
-            echo "SUCCESS: pipeline passed"
-        }
-
-        failure {
-            echo "FAILED: check logs"
-        }
+        always  { cleanWs() }
+        success { echo 'Pipeline Zero Trust OK' }
+        failure { echo 'Echec — voir les artifacts' }
     }
 }

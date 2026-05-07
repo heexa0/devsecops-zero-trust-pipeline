@@ -1,0 +1,15 @@
+requests==2.31.0
+rich==13.7.0
+pydantic==2.5.0
+python-dotenv==1.0.0
+ 
+  Terminal
+# Activer le venv (si pas déjà fait)
+# source venv/bin/activate     # Mac/Linux
+venv\Scripts\activate     # Windows
+ 
+# Installer les dépendances de l'agent
+pip install -r agent/requirements.txt
+ 
+# Vérifier
+python -c "import requests, rich, pydantic; print('Tout OK')"
