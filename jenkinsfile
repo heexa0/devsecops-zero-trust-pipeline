@@ -1,4 +1,3 @@
-// devsecops-zero-trust-pipeline/Jenkinsfile
 pipeline {
     agent any
 
@@ -19,19 +18,20 @@ pipeline {
 
     stages {
 
-        // ── Stage 0 : Préparation ──────────────────────────
         stage('0. Préparation') {
             steps {
                 sh '''
+                    if ! command -v python3 &>/dev/null; then
+                        apt-get update -qq && apt-get install -y -qq python3 python3-pip
+                    fi
                     mkdir -p ${REPORTS_DIR}
-                    pip install --quiet semgrep anthropic rich requests 2>/dev/null || true
+                    pip3 install --quiet semgrep anthropic rich requests 2>/dev/null || true
                     echo '=== Vérification moteurs IA ==='
                     python3 agent/ollama_client.py
                 '''
             }
         }
 
-        // ── Stage 1 : SAST Semgrep ─────────────────────────
         stage('1. SAST - Semgrep') {
             steps {
                 sh '''
@@ -52,13 +52,72 @@ print(f'Semgrep : {len(d.get(\"results\",[]))} probleme(s)')"
             }
         }
 
-        // ── Stages 2–5 : add your missing stages here ──────
-        // stage('2. ...') { ... }
-        // stage('3. ...') { ... }
-        // stage('4. ...') { ... }
-        // stage('5. ...') { ... }
+        stage('2. SCA - Trivy') {
+            steps {
+                sh '''
+                    if ! command -v trivy &>/dev/null; then
+                        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+                            | sh -s -- -b /usr/local/bin
+                    fi
+                    trivy fs ./test-app --format json \
+                        --output ${REPORTS_DIR}/trivy-report.json \
+                        --severity MEDIUM,HIGH,CRITICAL --quiet || true
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: "${REPORTS_DIR}/trivy-report.json",
+                                     allowEmptyArchive: true
+                }
+            }
+        }
 
-        // ── Stage 6 : Signature Cosign ─────────────────────
+        stage('3. AI Security Guard') {
+            steps {
+                sh 'cp ${REPORTS_DIR}/trivy-report.json agent/ || true'
+                sh 'cp ${REPORTS_DIR}/semgrep-results.json agent/ || true'
+            }
+            stages {
+                stage('3a. Anti-Tampering') {
+                    steps {
+                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                            sh 'cd agent && python3 antitamper_agent.py'
+                        }
+                    }
+                }
+                stage('3b. Remédiation CVE') {
+                    steps {
+                        sh 'cd agent && python3 remediation_agent.py'
+                    }
+                }
+                stage('3c. Rapport Explicatif') {
+                    steps {
+                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                            sh 'cd agent && python3 explainer_agent.py'
+                        }
+                    }
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'agent/*.json,agent/*.md',
+                                     allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('4. Build Docker') {
+            steps {
+                sh 'docker build -t ${IMAGE_NAME}:${BUILD_NUMBER} .'
+            }
+        }
+
+        stage('5. Scan Image Docker') {
+            steps {
+                sh 'trivy image --severity CRITICAL --exit-code 0 ${IMAGE_NAME}:${BUILD_NUMBER}'
+            }
+        }
+
         stage('6. Signature Cosign') {
             when { branch 'main' }
             steps {
@@ -75,7 +134,7 @@ print(f'Semgrep : {len(d.get(\"results\",[]))} probleme(s)')"
     } // end stages
 
     post {
-        always  { cleanWs() }
+        always  { deleteDir() }
         success { echo 'Pipeline Zero Trust OK' }
         failure { echo 'Echec — voir les artifacts' }
     }
