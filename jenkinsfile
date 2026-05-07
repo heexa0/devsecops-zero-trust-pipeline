@@ -18,6 +18,7 @@ pipeline {
 
     stages {
 
+        // ── Stage 0 : Préparation ──────────────────────────────
         stage('0. Préparation') {
             steps {
                 sh '''
@@ -25,23 +26,33 @@ pipeline {
                         apt-get update -qq && apt-get install -y -qq python3 python3-pip
                     fi
                     mkdir -p ${REPORTS_DIR}
-                    pip3 install --quiet semgrep anthropic rich requests 2>/dev/null || true
-                    echo '=== Vérification moteurs IA ==='
+                '''
+                sh 'pip3 install semgrep anthropic rich requests pydantic --break-system-packages || pip3 install semgrep anthropic rich requests pydantic'
+                sh '''
+                    echo "=== Vérification moteurs IA ==="
                     python3 agent/ollama_client.py
                 '''
             }
         }
 
+        // ── Stage 1 : SAST Semgrep ─────────────────────────────
         stage('1. SAST - Semgrep') {
             steps {
                 sh '''
                     semgrep --config=auto test-app/ \
                         --json --output=${REPORTS_DIR}/semgrep-results.json \
                         --severity=WARNING || true
+                '''
+                sh '''
                     python3 -c "
 import json
-d=json.load(open('${REPORTS_DIR}/semgrep-results.json'))
-print(f'Semgrep : {len(d.get(\"results\",[]))} probleme(s)')"
+try:
+    d = json.load(open('${REPORTS_DIR}/semgrep-results.json'))
+    n = len(d.get('results', []))
+    print(f'Semgrep : {n} probleme(s) detecte(s)')
+except Exception as e:
+    print(f'Semgrep rapport vide : {e}')
+"
                 '''
             }
             post {
@@ -52,6 +63,7 @@ print(f'Semgrep : {len(d.get(\"results\",[]))} probleme(s)')"
             }
         }
 
+        // ── Stage 2 : SCA Trivy ────────────────────────────────
         stage('2. SCA - Trivy') {
             steps {
                 sh '''
@@ -59,9 +71,24 @@ print(f'Semgrep : {len(d.get(\"results\",[]))} probleme(s)')"
                         curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
                             | sh -s -- -b /usr/local/bin
                     fi
-                    trivy fs ./test-app --format json \
+                    trivy fs ./test-app \
+                        --format json \
                         --output ${REPORTS_DIR}/trivy-report.json \
-                        --severity MEDIUM,HIGH,CRITICAL --quiet || true
+                        --severity MEDIUM,HIGH,CRITICAL \
+                        --quiet || true
+                '''
+                sh '''
+                    python3 -c "
+import json
+try:
+    d = json.load(open('${REPORTS_DIR}/trivy-report.json'))
+    t = sum(len(r.get('Vulnerabilities') or []) for r in d.get('Results', []))
+    c = sum(1 for r in d.get('Results', []) for v in (r.get('Vulnerabilities') or []) if v.get('Severity') == 'CRITICAL')
+    h = sum(1 for r in d.get('Results', []) for v in (r.get('Vulnerabilities') or []) if v.get('Severity') == 'HIGH')
+    print(f'Trivy : {t} CVE total | {c} CRITICAL | {h} HIGH')
+except Exception as e:
+    print(f'Trivy rapport vide : {e}')
+"
                 '''
             }
             post {
@@ -72,22 +99,28 @@ print(f'Semgrep : {len(d.get(\"results\",[]))} probleme(s)')"
             }
         }
 
+        // ── Stage 3 : Agent IA ─────────────────────────────────
         stage('3. AI Security Guard') {
             stages {
+
                 stage('3a. Anti-Tampering') {
                     steps {
-                        sh 'cp ${REPORTS_DIR}/trivy-report.json agent/ || true'
+                        sh 'cp ${REPORTS_DIR}/trivy-report.json    agent/ || true'
                         sh 'cp ${REPORTS_DIR}/semgrep-results.json agent/ || true'
                         catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
                             sh 'cd agent && python3 antitamper_agent.py'
                         }
                     }
                 }
+
                 stage('3b. Remédiation CVE') {
                     steps {
-                        sh 'cd agent && python3 remediation_agent.py'
+                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                            sh 'cd agent && python3 remediation_agent.py'
+                        }
                     }
                 }
+
                 stage('3c. Rapport Explicatif') {
                     steps {
                         catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
@@ -104,18 +137,21 @@ print(f'Semgrep : {len(d.get(\"results\",[]))} probleme(s)')"
             }
         }
 
+        // ── Stage 4 : Build Docker ──────────────────────────────
         stage('4. Build Docker') {
             steps {
                 sh 'docker build -t ${IMAGE_NAME}:${BUILD_NUMBER} .'
             }
         }
 
+        // ── Stage 5 : Scan image Docker ────────────────────────
         stage('5. Scan Image Docker') {
             steps {
                 sh 'trivy image --severity CRITICAL --exit-code 0 ${IMAGE_NAME}:${BUILD_NUMBER}'
             }
         }
 
+        // ── Stage 6 : Signature Cosign (branche main) ──────────
         stage('6. Signature Cosign') {
             when { branch 'main' }
             steps {
@@ -124,17 +160,17 @@ print(f'Semgrep : {len(d.get(\"results\",[]))} probleme(s)')"
                         curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
                             -o /usr/local/bin/cosign && chmod +x /usr/local/bin/cosign
                     fi
+                    cosign version
                     echo "Pipeline Zero Trust complet - Build ${BUILD_NUMBER}"
                 '''
             }
         }
 
-    } // end stages
+    }
 
     post {
         always  { deleteDir() }
         success { echo 'Pipeline Zero Trust OK' }
         failure { echo 'Echec — voir les artifacts' }
     }
-
-} // end pipeline
+}
