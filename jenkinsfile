@@ -18,24 +18,39 @@ pipeline {
 
     stages {
 
-        // ── Stage 0 : Préparation ──────────────────────────────
         stage('0. Préparation') {
             steps {
                 sh '''
+                    # Python
                     if ! command -v python3 &>/dev/null; then
                         apt-get update -qq && apt-get install -y -qq python3 python3-pip
                     fi
+
+                    # Docker CLI
+                    if ! command -v docker &>/dev/null; then
+                        apt-get update -qq
+                        apt-get install -y -qq ca-certificates curl gnupg
+                        install -m 0755 -d /etc/apt/keyrings
+                        curl -fsSL https://download.docker.com/linux/debian/gpg \
+                            | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+                        chmod a+r /etc/apt/keyrings/docker.gpg
+                        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+                            https://download.docker.com/linux/debian bookworm stable" \
+                            > /etc/apt/sources.list.d/docker.list
+                        apt-get update -qq
+                        apt-get install -y -qq docker-ce-cli
+                    fi
+
                     mkdir -p ${REPORTS_DIR}
-                '''
-                sh 'pip3 install semgrep anthropic rich requests pydantic --break-system-packages || pip3 install semgrep anthropic rich requests pydantic'
-                sh '''
-                    echo "=== Vérification moteurs IA ==="
+                    python3 -m pip install --quiet --break-system-packages \
+                        --root-user-action=ignore \
+                        semgrep anthropic rich requests pydantic 2>/dev/null || true
+                    echo '=== Vérification moteurs IA ==='
                     python3 agent/ollama_client.py
                 '''
             }
         }
 
-        // ── Stage 1 : SAST Semgrep ─────────────────────────────
         stage('1. SAST - Semgrep') {
             steps {
                 sh '''
@@ -63,19 +78,17 @@ except Exception as e:
             }
         }
 
-        // ── Stage 2 : SCA Trivy ────────────────────────────────
         stage('2. SCA - Trivy') {
             steps {
                 sh '''
                     if ! command -v trivy &>/dev/null; then
                         curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
                             | sh -s -- -b /usr/local/bin
+                        chmod +x /usr/local/bin/trivy
                     fi
-                    trivy fs ./test-app \
-                        --format json \
+                    trivy fs ./test-app --format json \
                         --output ${REPORTS_DIR}/trivy-report.json \
-                        --severity MEDIUM,HIGH,CRITICAL \
-                        --quiet || true
+                        --severity MEDIUM,HIGH,CRITICAL --quiet || true
                 '''
                 sh '''
                     python3 -c "
@@ -99,20 +112,17 @@ except Exception as e:
             }
         }
 
-        // ── Stage 3 : Agent IA ─────────────────────────────────
         stage('3. AI Security Guard') {
             stages {
-
                 stage('3a. Anti-Tampering') {
                     steps {
-                        sh 'cp ${REPORTS_DIR}/trivy-report.json    agent/ || true'
+                        sh 'cp ${REPORTS_DIR}/trivy-report.json agent/ || true'
                         sh 'cp ${REPORTS_DIR}/semgrep-results.json agent/ || true'
                         catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
                             sh 'cd agent && python3 antitamper_agent.py'
                         }
                     }
                 }
-
                 stage('3b. Remédiation CVE') {
                     steps {
                         catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
@@ -120,7 +130,6 @@ except Exception as e:
                         }
                     }
                 }
-
                 stage('3c. Rapport Explicatif') {
                     steps {
                         catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
@@ -137,21 +146,18 @@ except Exception as e:
             }
         }
 
-        // ── Stage 4 : Build Docker ──────────────────────────────
         stage('4. Build Docker') {
             steps {
                 sh 'docker build -t ${IMAGE_NAME}:${BUILD_NUMBER} .'
             }
         }
 
-        // ── Stage 5 : Scan image Docker ────────────────────────
         stage('5. Scan Image Docker') {
             steps {
                 sh 'trivy image --severity CRITICAL --exit-code 0 ${IMAGE_NAME}:${BUILD_NUMBER}'
             }
         }
 
-        // ── Stage 6 : Signature Cosign (branche main) ──────────
         stage('6. Signature Cosign') {
             when { branch 'main' }
             steps {
@@ -160,17 +166,17 @@ except Exception as e:
                         curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
                             -o /usr/local/bin/cosign && chmod +x /usr/local/bin/cosign
                     fi
-                    cosign version
                     echo "Pipeline Zero Trust complet - Build ${BUILD_NUMBER}"
                 '''
             }
         }
 
-    }
+    } // end stages
 
     post {
         always  { deleteDir() }
         success { echo 'Pipeline Zero Trust OK' }
         failure { echo 'Echec — voir les artifacts' }
     }
-}
+
+} // end pipeline
