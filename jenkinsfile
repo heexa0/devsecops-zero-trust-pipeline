@@ -26,26 +26,12 @@ pipeline {
                         apt-get update -qq && apt-get install -y -qq python3 python3-pip
                     fi
 
-                    # Docker CLI
-                    if ! command -v docker &>/dev/null; then
-                        apt-get update -qq
-                        apt-get install -y -qq ca-certificates curl gnupg
-                        install -m 0755 -d /etc/apt/keyrings
-                        curl -fsSL https://download.docker.com/linux/debian/gpg \
-                            | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-                        chmod a+r /etc/apt/keyrings/docker.gpg
-                        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-                            https://download.docker.com/linux/debian bookworm stable" \
-                            > /etc/apt/sources.list.d/docker.list
-                        apt-get update -qq
-                        apt-get install -y -qq docker-ce-cli
-                    fi
-
-                    # Trivy via apt (officiel)
+                    # Trivy via apt
                     if ! command -v trivy &>/dev/null; then
-                        apt-get install -y -qq wget apt-transport-https gnupg
-                        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
-                            | gpg --dearmor -o /etc/apt/keyrings/trivy.gpg
+                        apt-get update -qq
+                        apt-get install -y -qq wget apt-transport-https
+                        wget -qO /etc/apt/keyrings/trivy.gpg \
+                            https://aquasecurity.github.io/trivy-repo/deb/public.key
                         echo "deb [signed-by=/etc/apt/keyrings/trivy.gpg] \
                             https://aquasecurity.github.io/trivy-repo/deb generic main" \
                             > /etc/apt/sources.list.d/trivy.list
