@@ -7,7 +7,7 @@ from utils import afficher_banniere
  
 console = Console()
  
-PIPELINE_PATH = '.github/workflows/pipeline.yml'
+PIPELINE_PATH = '../Jenkinsfile'
  
 # Patterns suspects à détecter (règles fixes, sans IA)
 PATTERNS_SUSPECTS = [
