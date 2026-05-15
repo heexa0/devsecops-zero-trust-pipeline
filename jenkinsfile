@@ -118,7 +118,7 @@ except Exception as e:
                         sh 'cp ${REPORTS_DIR}/trivy-report.json agent/ || true'
                         sh 'cp ${REPORTS_DIR}/semgrep-results.json agent/ || true'
                         catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                        sh 'cd agent && PIPELINE_PATH=${WORKSPACE}/Jenkinsfile python3 antitamper_agent.py'
+                        sh 'cd agent && PIPELINE_PATH=${WORKSPACE}/jenkinsfile python3 antitamper_agent.py'
                         }
                     }
                 } 
