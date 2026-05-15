@@ -24,10 +24,10 @@ cd devsecops-zero-trust-pipeline
 
 ### 2. Lancer le script de setup
 
-Double-clique sur `setup.bat` ou depuis un terminal :
+Dqns Git pour Windows :
 
-```bat
-setup.bat
+```bash
+setup.sh
 ```
 
 Le script va :
