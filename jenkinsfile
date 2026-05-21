@@ -6,6 +6,7 @@ pipeline {
         OLLAMA_URL   = 'http://ollama:11434'
         OLLAMA_MODEL = 'llama3.2:3b'
         REPORTS_DIR  = 'reports'
+        VENV         = '/opt/zerotrust-venv'
     }
 
     options {
@@ -58,9 +59,10 @@ pipeline {
             fi
 
             mkdir -p ${REPORTS_DIR}
-            pip3 install --quiet semgrep anthropic rich requests pydantic
+            python3 -m venv ${VENV}
+            ${VENV}/bin/pip install --quiet semgrep anthropic rich requests pydantic
             echo '=== Vérification moteurs IA ==='
-            python3 agent/ollama_client.py
+            ${VENV}/bin/python3 agent/ollama_client.py
         '''
     }
 }
@@ -73,7 +75,7 @@ pipeline {
                         --severity=WARNING || true
                 '''
                 sh '''
-                    python3 -c "
+                    ${VENV}/bin/python3 -c "
 import json
 try:
     d = json.load(open('${REPORTS_DIR}/semgrep-results.json'))
@@ -100,7 +102,7 @@ except Exception as e:
                         --severity MEDIUM,HIGH,CRITICAL --quiet || true
                 '''
                 sh '''
-                    python3 -c "
+                    ${VENV}/bin/python3 -c "
 import json
 try:
     d = json.load(open('${REPORTS_DIR}/trivy-report.json'))
@@ -129,7 +131,7 @@ except Exception as e:
                         sh 'cp ${REPORTS_DIR}/semgrep-results.json agent/ || true'
                         withCredentials([string(credentialsId: 'ANTHROPIC_API_KEY', variable: 'ANTHROPIC_API_KEY')]) {
                             catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                                sh 'cd agent && PIPELINE_PATH=${WORKSPACE}/jenkinsfile python3 antitamper_agent.py'
+                                sh 'cd agent && PIPELINE_PATH=${WORKSPACE}/jenkinsfile ${VENV}/bin/python3 antitamper_agent.py'
                             }
                         }
                     }
@@ -138,7 +140,7 @@ except Exception as e:
                     steps {
                         withCredentials([string(credentialsId: 'ANTHROPIC_API_KEY', variable: 'ANTHROPIC_API_KEY')]) {
                             catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                                sh 'cd agent && python3 remediation_agent.py'
+                                sh 'cd agent && ${VENV}/bin/python3 remediation_agent.py'
                             }
                         }
                     }
@@ -147,7 +149,7 @@ except Exception as e:
                     steps {
                         withCredentials([string(credentialsId: 'ANTHROPIC_API_KEY', variable: 'ANTHROPIC_API_KEY')]) {
                             catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                                sh 'cd agent && python3 explainer_agent.py'
+                                sh 'cd agent && ${VENV}/bin/python3 explainer_agent.py'
                             }
                         }
                     }
