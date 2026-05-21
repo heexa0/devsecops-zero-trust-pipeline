@@ -65,7 +65,7 @@ pipeline {
 
             mkdir -p ${REPORTS_DIR}
             python3 -m venv ${VENV}
-            ${VENV}/bin/pip install --quiet semgrep anthropic rich requests pydantic
+            ${VENV}/bin/pip install --quiet semgrep anthropic rich requests pydantic reportlab
             echo '=== Vérification moteurs IA ==='
             ${VENV}/bin/python3 agent/ollama_client.py
         '''
@@ -180,6 +180,60 @@ except Exception as e:
             }
         }
 
+        stage('5b. DAST - OWASP ZAP') {
+            steps {
+                catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                    sh '''
+                        docker network create zerotrust-dast 2>/dev/null || true
+
+                        # Démarrer l'application cible
+                        docker run -d --name zerotrust-target \
+                            --network zerotrust-dast \
+                            zerotrust-app:${BUILD_NUMBER}
+                        sleep 8
+
+                        # Scan OWASP ZAP baseline
+                        docker run --name zap-scan \
+                            --network zerotrust-dast \
+                            ghcr.io/zaproxy/zaproxy:stable \
+                            zap-baseline.py \
+                            -t http://zerotrust-target:5000 \
+                            -J /tmp/zap-report.json \
+                            -r /tmp/zap-report.html \
+                            -I || true
+
+                        # Extraire les rapports via docker cp (compatible DinD socket)
+                        docker cp zap-scan:/tmp/zap-report.json ${REPORTS_DIR}/zap-report.json || true
+                        docker cp zap-scan:/tmp/zap-report.html ${REPORTS_DIR}/zap-report.html || true
+                        cp ${REPORTS_DIR}/zap-report.json agent/zap-report.json 2>/dev/null || true
+
+                        # Résumé rapide
+                        ${VENV}/bin/python3 -c "
+import json, sys
+try:
+    d = json.load(open('${REPORTS_DIR}/zap-report.json'))
+    alerts = [a for s in d.get('site', []) for a in s.get('alerts', [])]
+    high = [a for a in alerts if a.get('riskdesc','').startswith('High')]
+    print(f'ZAP : {len(alerts)} alerte(s) | {len(high)} High')
+except Exception as e:
+    print(f'ZAP rapport: {e}')
+" || true
+                    '''
+                }
+            }
+            post {
+                always {
+                    sh '''
+                        docker rm -f zap-scan       2>/dev/null || true
+                        docker rm -f zerotrust-target 2>/dev/null || true
+                        docker network rm zerotrust-dast 2>/dev/null || true
+                    '''
+                    archiveArtifacts artifacts: "${REPORTS_DIR}/zap-report.*",
+                                     allowEmptyArchive: true
+                }
+            }
+        }
+
         stage('6. Signature Cosign') {
             steps {
                 sh '''
@@ -194,6 +248,23 @@ except Exception as e:
                         echo "INFO: Signature keyless ignorée hors OIDC — image construite et vérifiée localement"
                     echo "Pipeline Zero Trust complet - Build ${BUILD_NUMBER}"
                 '''
+            }
+        }
+
+        stage('7. Rapport PDF') {
+            steps {
+                sh '''
+                    # Rassembler tous les rapports JSON dans agent/
+                    cp ${REPORTS_DIR}/*.json agent/ 2>/dev/null || true
+                    cd agent && ${VENV}/bin/python3 pdf_report_agent.py
+                    cp agent/rapport-zerotrust.pdf ${REPORTS_DIR}/ 2>/dev/null || true
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: "${REPORTS_DIR}/rapport-zerotrust.pdf",
+                                     allowEmptyArchive: true
+                }
             }
         }
 
