@@ -54,5 +54,6 @@ services:
     networks:
       - ai-internal   # Réseau interne uniquement
       - zerotrust-net
+      
     environment:
       - OLLAMA_HOST=0.0.0.0

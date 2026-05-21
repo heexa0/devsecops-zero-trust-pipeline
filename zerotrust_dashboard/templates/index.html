@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ZeroTrust CI — Pipeline Dashboard</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.14.0/dist/tabler-icons.min.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/dashboard.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- ═══ SIDEBAR ═══ -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-mark"><i class="ti ti-shield-lock"></i></div>
+      <div>
+        <div class="logo-text">ZeroTrust CI</div>
+        <div class="logo-sub">ENSA · PFS 2026</div>
+      </div>
+    </div>
+
+    <nav class="sidebar-nav">
+      <div class="nav-item active" onclick="showView('pipeline')">
+        <i class="ti ti-layout-dashboard"></i> Dashboard
+      </div>
+
+      <div class="nav-group-label">Pipeline</div>
+
+      <div class="nav-item" onclick="showView('pipeline')">
+        <i class="ti ti-git-branch"></i> Stages
+        <span class="nav-badge" id="stagesBadge">11</span>
+      </div>
+      <div class="nav-item" onclick="filterFindings('all')">
+        <i class="ti ti-bug"></i> Vulnérabilités
+        <span class="nav-badge warn" id="findingsBadge">–</span>
+      </div>
+      <div class="nav-item" onclick="showView('pipeline')">
+        <i class="ti ti-fire"></i> Scénarios
+      </div>
+      <div class="nav-item" onclick="showView('pipeline')">
+        <i class="ti ti-shield-check"></i> Zero Trust
+      </div>
+
+      <div class="nav-group-label">Security Scans</div>
+
+      <div class="nav-item" onclick="filterFindings('SAST')">
+        <i class="ti ti-code"></i> SAST — Semgrep
+      </div>
+      <div class="nav-item" onclick="filterFindings('SCA')">
+        <i class="ti ti-package"></i> SCA — Trivy
+      </div>
+      <div class="nav-item" onclick="filterFindings('DAST')">
+        <i class="ti ti-antenna"></i> DAST — ZAP
+      </div>
+
+      <div class="nav-group-label">Agents IA</div>
+
+      <div class="nav-item" onclick="showView('agents')">
+        <i class="ti ti-brain"></i> Remédiation
+      </div>
+      <div class="nav-item" onclick="showView('agents')">
+        <i class="ti ti-lock-access"></i> Anti-Tamper
+      </div>
+      <div class="nav-item" onclick="simulateFallback()">
+        <i class="ti ti-refresh"></i> Fallback IA
+      </div>
+
+      <div class="nav-group-label">Téléchargements</div>
+
+      <div class="nav-item" onclick="downloadFile('trivy-report.json')">
+        <i class="ti ti-download"></i> Trivy JSON
+      </div>
+      <div class="nav-item" onclick="downloadFile('semgrep-results.json')">
+        <i class="ti ti-download"></i> Semgrep SARIF
+      </div>
+      <div class="nav-item" onclick="downloadFile('zap-report.html')">
+        <i class="ti ti-download"></i> ZAP Report
+      </div>
+      <div class="nav-item" onclick="downloadFile('rapport-zerotrust.pdf')">
+        <i class="ti ti-download"></i> Rapport PDF
+      </div>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="team-pill">
+        <div class="avatar">E3</div>
+        <div class="team-info">
+          <div class="team-name">Équipe 3</div>
+          <div class="team-role">3 membres · v2.0</div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ═══ MAIN ═══ -->
+  <div class="main">
+
+    <!-- TOPBAR -->
+    <header class="topbar">
+      <div class="topbar-search">
+        <i class="ti ti-search"></i>
+        <input type="text" placeholder="Rechercher…" />
+      </div>
+      <div class="topbar-spacer"></div>
+      <span class="chip ok" id="liveStatus"><span class="dot ok"></span>Jenkins actif</span>
+      <span class="chip blue" id="buildNum">Build #—</span>
+      <button class="topbar-btn" onclick="simulateFallback()"><i class="ti ti-refresh"></i> Simulate Fallback</button>
+      <button class="topbar-btn primary" onclick="refreshAll()"><i class="ti ti-reload"></i> Refresh</button>
+      <div class="icon-btn" title="Notifications"><i class="ti ti-bell"></i></div>
+      <div class="icon-btn" title="Paramètres"><i class="ti ti-settings"></i></div>
+      <div class="avatar sm">E3</div>
+    </header>
+
+    <!-- CONTENT -->
+    <div class="content">
+
+      <!-- Page header -->
+      <div class="page-header">
+        <div>
+          <div class="page-title" id="buildTitle">feat/zero-trust-v2</div>
+          <div class="page-sub">
+            Branch: feat/zero-trust-v2 &nbsp;·&nbsp;
+            Commit: <span class="mono" id="commitHash">a3f7c9d</span> &nbsp;·&nbsp;
+            Dernière MàJ: <span id="buildTime">–</span> &nbsp;·&nbsp;
+            <span id="lastRefresh" style="color:var(--text-muted)">–</span>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <div class="build-dur" id="timer">00:00</div>
+          <span class="chip amber" id="buildStatus"><span class="dot warn"></span>Chargement...</span>
+          <button class="btn btn-primary" onclick="refreshAll()"><i class="ti ti-player-play"></i>Lancer pipeline</button>
+        </div>
+      </div>
+
+      <!-- PIPELINE FLOW -->
+      <div class="card pipeline-card">
+        <div class="card-header">
+          <div class="card-title">Pipeline CI/CD Zero Trust</div>
+          <div class="card-subtitle">Jenkins local · Claude primaire → Ollama fallback · DAST intégré</div>
+          <div class="flow-legend">
+            <span class="legend-item"><span class="ldot done"></span>Terminé</span>
+            <span class="legend-item"><span class="ldot running"></span>En cours</span>
+            <span class="legend-item"><span class="ldot waiting"></span>En attente</span>
+            <span class="legend-item"><span class="ldot fail"></span>Échec</span>
+          </div>
+        </div>
+        <div class="flow-scroll">
+          <div class="flow-track" id="flowTrack"></div>
+        </div>
+        <div class="progress-bar-wrap">
+          <div class="progress-bar-fill" id="progressFill" style="width:0%"></div>
+        </div>
+      </div>
+
+      <!-- METRICS -->
+      <div class="metrics-row">
+        <div class="metric-card accent-card" onclick="filterFindings('all')">
+          <div class="metric-icon white"><i class="ti ti-clock-bolt"></i></div>
+          <div class="metric-label">MTTR moyen</div>
+          <div class="metric-value">3.5<span class="metric-unit">min</span></div>
+          <div class="metric-tag"><i class="ti ti-trending-down"></i>-93% vs manuel</div>
+        </div>
+        <div class="metric-card" onclick="filterFindings('SCA')">
+          <div class="metric-icon red"><i class="ti ti-bug"></i></div>
+          <div class="metric-label">CVEs détectés</div>
+          <div class="metric-value red" id="m-cve">–</div>
+          <div class="metric-sub" id="m-cve-sub">– critical · – high</div>
+        </div>
+        <div class="metric-card" onclick="filterFindings('SAST')">
+          <div class="metric-icon amber"><i class="ti ti-code"></i></div>
+          <div class="metric-label">SAST findings</div>
+          <div class="metric-value amber" id="m-sast">–</div>
+          <div class="metric-sub" id="m-sast-sub">Semgrep analysis</div>
+        </div>
+        <div class="metric-card" onclick="filterFindings('DAST')">
+          <div class="metric-icon blue"><i class="ti ti-antenna"></i></div>
+          <div class="metric-label">ZAP alerts</div>
+          <div class="metric-value blue" id="m-zap">–</div>
+          <div class="metric-sub" id="m-zap-sub">– high severity</div>
+        </div>
+        <div class="metric-card" onclick="showView('agents')">
+          <div class="metric-icon purple"><i class="ti ti-brain"></i></div>
+          <div class="metric-label">AI Provider actif</div>
+          <div class="metric-value purple" id="m-ai">Claude</div>
+          <div class="metric-sub" id="m-ai-sub">– calls · – fallbacks</div>
+        </div>
+      </div>
+
+      <!-- TWO COLUMNS -->
+      <div class="two-col">
+
+        <!-- LEFT: Findings -->
+        <div class="card findings-card">
+          <div class="tab-bar">
+            <div class="tab active" onclick="filterFindings('all', this)">Tous <span id="tabAll">(–)</span></div>
+            <div class="tab" onclick="filterFindings('critical', this)">Critique</div>
+            <div class="tab" onclick="filterFindings('high', this)">Haut</div>
+            <div class="tab" onclick="filterFindings('SAST', this)">SAST</div>
+            <div class="tab" onclick="filterFindings('SCA', this)">SCA</div>
+            <div class="tab" onclick="filterFindings('DAST', this)">DAST</div>
+          </div>
+          <div id="findingsList">
+            <div class="empty-state"><i class="ti ti-loader-2 spin"></i><br>Chargement des findings...</div>
+          </div>
+        </div>
+
+        <!-- RIGHT -->
+        <div class="right-col">
+
+          <!-- Console -->
+          <div class="card console-card">
+            <div class="console-header">
+              <i class="ti ti-terminal" style="color:var(--success);font-size:14px"></i>
+              <span class="console-title">Console Jenkins</span>
+              <div class="console-actions">
+                <button class="icon-btn" title="Vider" onclick="clearConsole()"><i class="ti ti-trash"></i></button>
+                <button class="icon-btn" title="Bas" onclick="scrollConsole()"><i class="ti ti-arrow-down"></i></button>
+                <button class="icon-btn" title="Copier" onclick="copyLogs()"><i class="ti ti-copy"></i></button>
+              </div>
+            </div>
+            <div class="console-body" id="consoleBody"></div>
+          </div>
+
+          <!-- AI Fallback Status -->
+          <div class="card ai-card">
+            <div class="ai-label"><i class="ti ti-robot"></i> AI Fallback Status</div>
+            <div class="fallback-flow">
+              <div class="provider-row primary">
+                <div class="provider-icon claude"><i class="ti ti-stars"></i></div>
+                <div class="provider-info">
+                  <div class="provider-name">Claude Sonnet — Primaire</div>
+                  <div class="provider-detail" id="claudeDetail">claude-sonnet-4-5 · API Anthropic</div>
+                </div>
+                <span class="provider-status ok" id="claudeChip">Actif</span>
+              </div>
+              <div class="connector-arrow">fallback automatique si indisponible</div>
+              <div class="provider-row">
+                <div class="provider-icon ollama"><i class="ti ti-cpu"></i></div>
+                <div class="provider-info">
+                  <div class="provider-name">Ollama Mistral 7B — Fallback</div>
+                  <div class="provider-detail">localhost:11434 · données locales · &lt;35s</div>
+                </div>
+                <span class="provider-status standby" id="ollamaChip">Standby</span>
+              </div>
+            </div>
+            <div class="ai-stats">
+              <div>Calls: <b class="purple" id="aiCalls">–</b></div>
+              <div>Latence: <b id="aiLatency">1.2s</b></div>
+              <div>Fallbacks: <b class="amber" id="fallbackCount">0</b></div>
+            </div>
+          </div>
+
+          <!-- Downloads -->
+          <div class="card dl-card">
+            <div class="ai-label"><i class="ti ti-download"></i> Télécharger les rapports</div>
+            <div class="dl-grid">
+              <button class="dl-btn" onclick="downloadFile('trivy-report.json')">
+                <i class="ti ti-package"></i>
+                <div><div class="dl-name">Trivy SCA</div><div class="dl-sub">JSON · CVEs</div></div>
+              </button>
+              <button class="dl-btn" onclick="downloadFile('zap-report.html')">
+                <i class="ti ti-antenna"></i>
+                <div><div class="dl-name">ZAP DAST</div><div class="dl-sub">HTML Report</div></div>
+              </button>
+              <button class="dl-btn" onclick="downloadFile('semgrep-results.json')">
+                <i class="ti ti-code"></i>
+                <div><div class="dl-name">Semgrep SAST</div><div class="dl-sub">JSON · SAST</div></div>
+              </button>
+              <button class="dl-btn" onclick="downloadFile('rapport-zerotrust.pdf')">
+                <i class="ti ti-file-type-pdf"></i>
+                <div><div class="dl-name">Rapport PDF</div><div class="dl-sub">Rapport complet</div></div>
+              </button>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div><!-- /content -->
+  </div><!-- /main -->
+</div><!-- /app -->
+
+<script src="/static/js/dashboard.js"></script>
+</body>
+</html>
