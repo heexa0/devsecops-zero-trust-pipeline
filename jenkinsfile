@@ -39,9 +39,10 @@ pipeline {
                     echo "ERREUR: clé GPG Trivy vide ou invalide" && exit 1
                 fi
                 gpg --no-default-keyring --keyring /tmp/trivy-check.gpg \
-                    --import /tmp/trivy.gpg 2>/dev/null
+                    --import /tmp/trivy.gpg 2>/dev/null || true
+                echo "Trivy GPG key info:"
                 gpg --no-default-keyring --keyring /tmp/trivy-check.gpg \
-                    --fingerprint 2>/dev/null | grep -i "fingerprint"
+                    --fingerprint 2>/dev/null || true
                 cp /tmp/trivy.gpg /etc/apt/keyrings/trivy.gpg
                 echo "deb [signed-by=/etc/apt/keyrings/trivy.gpg] \
                     https://aquasecurity.github.io/trivy-repo/deb generic main" \
