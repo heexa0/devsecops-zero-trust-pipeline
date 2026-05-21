@@ -185,6 +185,8 @@ except Exception as e:
                 catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
                     sh '''
                         docker network create zerotrust-dast 2>/dev/null || true
+                        # Volume nommé pour ZAP (seule façon de récupérer les fichiers en DinD socket)
+                        docker volume create zap-wrk 2>/dev/null || true
 
                         # Démarrer l'application cible
                         docker run -d --name zerotrust-target \
@@ -192,24 +194,27 @@ except Exception as e:
                             zerotrust-app:${BUILD_NUMBER}
                         sleep 8
 
-                        # Scan OWASP ZAP baseline
+                        # Scan OWASP ZAP baseline — écrit dans /zap/wrk (volume monté)
                         docker run --name zap-scan \
                             --network zerotrust-dast \
+                            -v zap-wrk:/zap/wrk:rw \
                             ghcr.io/zaproxy/zaproxy:stable \
                             zap-baseline.py \
                             -t http://zerotrust-target:5000 \
-                            -J /tmp/zap-report.json \
-                            -r /tmp/zap-report.html \
+                            -J zap-report.json \
+                            -r zap-report.html \
                             -I || true
 
-                        # Extraire les rapports via docker cp (compatible DinD socket)
-                        docker cp zap-scan:/tmp/zap-report.json ${REPORTS_DIR}/zap-report.json || true
-                        docker cp zap-scan:/tmp/zap-report.html ${REPORTS_DIR}/zap-report.html || true
+                        # Extraire via Alpine (stdout → fichier local Jenkins)
+                        docker run --rm -v zap-wrk:/zap/wrk:ro alpine \
+                            cat /zap/wrk/zap-report.json > ${REPORTS_DIR}/zap-report.json 2>/dev/null || true
+                        docker run --rm -v zap-wrk:/zap/wrk:ro alpine \
+                            cat /zap/wrk/zap-report.html > ${REPORTS_DIR}/zap-report.html 2>/dev/null || true
                         cp ${REPORTS_DIR}/zap-report.json agent/zap-report.json 2>/dev/null || true
 
                         # Résumé rapide
                         ${VENV}/bin/python3 -c "
-import json, sys
+import json
 try:
     d = json.load(open('${REPORTS_DIR}/zap-report.json'))
     alerts = [a for s in d.get('site', []) for a in s.get('alerts', [])]
@@ -224,9 +229,10 @@ except Exception as e:
             post {
                 always {
                     sh '''
-                        docker rm -f zap-scan       2>/dev/null || true
+                        docker rm -f zap-scan         2>/dev/null || true
                         docker rm -f zerotrust-target 2>/dev/null || true
                         docker network rm zerotrust-dast 2>/dev/null || true
+                        docker volume rm zap-wrk      2>/dev/null || true
                     '''
                     archiveArtifacts artifacts: "${REPORTS_DIR}/zap-report.*",
                                      allowEmptyArchive: true
@@ -254,10 +260,9 @@ except Exception as e:
         stage('7. Rapport PDF') {
             steps {
                 sh '''
-                    # Rassembler tous les rapports JSON dans agent/
                     cp ${REPORTS_DIR}/*.json agent/ 2>/dev/null || true
-                    cd agent && ${VENV}/bin/python3 pdf_report_agent.py
-                    cp agent/rapport-zerotrust.pdf ${REPORTS_DIR}/ 2>/dev/null || true
+                    (cd agent && ${VENV}/bin/python3 pdf_report_agent.py)
+                    cp agent/rapport-zerotrust.pdf ${REPORTS_DIR}/rapport-zerotrust.pdf
                 '''
             }
             post {
