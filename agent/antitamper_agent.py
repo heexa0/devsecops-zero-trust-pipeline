@@ -35,15 +35,29 @@ def detection_rapide(contenu: str) -> list[str]:
 
 
 def analyse_ia(contenu: str) -> dict:
-    """Analyse approfondie par Ollama"""
-    prompt = f"""Tu es un expert en sécurité CI/CD. Analyse ce Jenkinsfile :
+    """Analyse approfondie par Ollama — détection de tampering uniquement"""
+    prompt = f"""Tu es un expert en sécurité CI/CD. Analyse ce Jenkinsfile pour détecter des MODIFICATIONS MALVEILLANTES (tampering).
 
 ```groovy
-{contenu[:3000]}
+{contenu[:5000]}
 ```
 
-Détecte les problèmes de sécurité : commandes d'exfiltration, backdoors,
-téléchargements suspects, variables d'environnement exposées, secrets en clair.
+Cherche UNIQUEMENT ces signes de tampering réel :
+- Exfiltration de données : curl/wget vers des domaines inconnus (hors aquasecurity.github.io, download.docker.com, deb.debian.org, pypi.org, api.anthropic.com)
+- Reverse shells ou backdoors : nc, netcat, /dev/tcp/, base64 | bash, base64 | sh
+- Injection de code obfusqué : eval(), commandes encodées
+- Téléchargement et exécution de scripts non vérifiés depuis des domaines suspects
+- Envoi de secrets ou credentials vers l'extérieur
+
+NE PAS signaler comme problèmes :
+- La directive "agent any" (standard Jenkins)
+- L'installation de packages légitimes (trivy, docker, semgrep, python, pip)
+- Les variables OLLAMA_URL, OLLAMA_MODEL, IMAGE_NAME, REPORTS_DIR (non sensibles)
+- La connexion à ollama:11434 (service interne du pipeline)
+- Les commandes apt-get, wget, pip standard
+- Les "|| true" ou "2>/dev/null" (gestion d'erreurs normale)
+- withCredentials Jenkins (mécanisme sécurisé)
+- L'installation de Docker CLI dans un agent CI/CD (pratique standard)
 
 Réponds en JSON :
 {{
