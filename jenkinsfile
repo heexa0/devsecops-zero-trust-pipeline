@@ -61,6 +61,9 @@ pipeline {
             mkdir -p ${REPORTS_DIR}
             python3 -m venv ${VENV}
             ${VENV}/bin/pip install --quiet semgrep anthropic rich requests pydantic
+            # Rendre docker accessible dans tous les sh steps suivants
+            [ -f /usr/bin/docker ] && ln -sf /usr/bin/docker /usr/local/bin/docker || true
+            docker --version || echo "ATTENTION: Docker CLI non disponible"
             echo '=== Vérification moteurs IA ==='
             ${VENV}/bin/python3 agent/ollama_client.py
         '''
@@ -70,7 +73,7 @@ pipeline {
         stage('1. SAST - Semgrep') {
             steps {
                 sh '''
-                    semgrep --config=auto test-app/ \
+                    ${VENV}/bin/semgrep --config=auto test-app/ \
                         --json --output=${REPORTS_DIR}/semgrep-results.json \
                         --severity=WARNING || true
                 '''
