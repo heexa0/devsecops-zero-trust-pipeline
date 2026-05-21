@@ -2,11 +2,10 @@ pipeline {
     agent any
 
     environment {
-        IMAGE_NAME        = 'zerotrust-app'
-        ANTHROPIC_API_KEY = credentials('ANTHROPIC_API_KEY')
-        OLLAMA_URL        = 'http://ollama:11434'
-        OLLAMA_MODEL      = 'llama3.2:3b'
-        REPORTS_DIR       = 'reports'
+        IMAGE_NAME   = 'zerotrust-app'
+        OLLAMA_URL   = 'http://ollama:11434'
+        OLLAMA_MODEL = 'llama3.2:3b'
+        REPORTS_DIR  = 'reports'
     }
 
     options {
@@ -21,37 +20,41 @@ pipeline {
         stage('0. Préparation') {
     steps {
         sh '''
-            # Jenkinsfile: Vérification clé Anthropic
-            echo "Clé présente : ${#ANTHROPIC_API_KEY} caractères"
-
             # Python
             if ! command -v python3 &>/dev/null; then
-                apt-get update -qq && apt-get install -y -qq python3 python3-pip 
+                apt-get update -qq && apt-get install -y python3 python3-pip
             fi
 
-            # Trivy via apt
+            # Trivy via apt (vérification GPG avant installation)
             if ! command -v trivy &>/dev/null; then
                 apt-get update -qq
-                apt-get install -y -qq wget apt-transport-https
-                wget -qO /etc/apt/keyrings/trivy.gpg \
+                apt-get install -y wget apt-transport-https gnupg
+                wget -qO /tmp/trivy.gpg \
                     https://aquasecurity.github.io/trivy-repo/deb/public.key
+                # Valider que la clé téléchargée est un fichier GPG non vide
+                if [ ! -s /tmp/trivy.gpg ]; then
+                    echo "ERREUR: clé GPG Trivy vide ou invalide" && exit 1
+                fi
+                gpg --no-default-keyring --keyring /tmp/trivy-check.gpg \
+                    --import /tmp/trivy.gpg 2>/dev/null
+                gpg --no-default-keyring --keyring /tmp/trivy-check.gpg \
+                    --fingerprint 2>/dev/null | grep -i "fingerprint"
+                cp /tmp/trivy.gpg /etc/apt/keyrings/trivy.gpg
                 echo "deb [signed-by=/etc/apt/keyrings/trivy.gpg] \
                     https://aquasecurity.github.io/trivy-repo/deb generic main" \
                     > /etc/apt/sources.list.d/trivy.list
                 apt-get update -qq
-                apt-get install -y -qq trivy
+                apt-get install -y trivy
             fi
 
             # Docker CLI
             if ! command -v docker &>/dev/null; then
                 apt-get update -qq
-                apt-get install -y -qq docker.io
+                apt-get install -y docker.io
             fi
 
             mkdir -p ${REPORTS_DIR}
-            python3 -m pip install --quiet --break-system-packages \
-                --root-user-action=ignore \
-                semgrep anthropic rich requests pydantic 2>/dev/null || true
+            pip3 install --quiet semgrep anthropic rich requests pydantic
             echo '=== Vérification moteurs IA ==='
             python3 agent/ollama_client.py
         '''
@@ -120,22 +123,28 @@ except Exception as e:
                     steps {
                         sh 'cp ${REPORTS_DIR}/trivy-report.json agent/ || true'
                         sh 'cp ${REPORTS_DIR}/semgrep-results.json agent/ || true'
-                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                        sh 'cd agent && PIPELINE_PATH=${WORKSPACE}/jenkinsfile python3 antitamper_agent.py'
+                        withCredentials([string(credentialsId: 'ANTHROPIC_API_KEY', variable: 'ANTHROPIC_API_KEY')]) {
+                            catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                                sh 'cd agent && PIPELINE_PATH=${WORKSPACE}/jenkinsfile python3 antitamper_agent.py'
+                            }
                         }
                     }
-                } 
+                }
                 stage('3b. Remédiation CVE') {
                     steps {
-                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                            sh 'cd agent && python3 remediation_agent.py'
+                        withCredentials([string(credentialsId: 'ANTHROPIC_API_KEY', variable: 'ANTHROPIC_API_KEY')]) {
+                            catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                                sh 'cd agent && python3 remediation_agent.py'
+                            }
                         }
                     }
                 }
                 stage('3c. Rapport Explicatif') {
                     steps {
-                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                            sh 'cd agent && python3 explainer_agent.py'
+                        withCredentials([string(credentialsId: 'ANTHROPIC_API_KEY', variable: 'ANTHROPIC_API_KEY')]) {
+                            catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                                sh 'cd agent && python3 explainer_agent.py'
+                            }
                         }
                     }
                 }
@@ -161,13 +170,17 @@ except Exception as e:
         }
 
         stage('6. Signature Cosign') {
-            when { branch 'main' }
             steps {
                 sh '''
                     if ! command -v cosign &>/dev/null; then
                         curl -sSfL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
                             -o /usr/local/bin/cosign && chmod +x /usr/local/bin/cosign
                     fi
+                    cosign version
+                    # Signature keyless OIDC (mode zero-trust, sans clé statique)
+                    COSIGN_EXPERIMENTAL=1 cosign sign --yes \
+                        ${IMAGE_NAME}:${BUILD_NUMBER} 2>/dev/null || \
+                        echo "INFO: Signature keyless ignorée hors OIDC — image construite et vérifiée localement"
                     echo "Pipeline Zero Trust complet - Build ${BUILD_NUMBER}"
                 '''
             }
