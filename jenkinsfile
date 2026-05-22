@@ -185,16 +185,37 @@ except Exception as e:
                 catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
                     sh '''
                         docker network create zerotrust-dast 2>/dev/null || true
-                        # Volume nommé pour ZAP (seule façon de récupérer les fichiers en DinD socket)
+
+                        # Volume ZAP avec permissions ouvertes (ZAP tourne en user zap UID 1000)
                         docker volume create zap-wrk 2>/dev/null || true
+                        docker run --rm -v zap-wrk:/zap/wrk busybox chmod 777 /zap/wrk
 
                         # Démarrer l'application cible
                         docker run -d --name zerotrust-target \
                             --network zerotrust-dast \
                             zerotrust-app:${BUILD_NUMBER}
-                        sleep 8
 
-                        # Scan OWASP ZAP baseline — écrit dans /zap/wrk (volume monté)
+                        # Attendre que Flask soit vraiment prêt (socket check)
+                        echo "Attente démarrage de l\'application..."
+                        for i in $(seq 1 20); do
+                            if docker exec zerotrust-target python3 -c "
+import socket
+try:
+    s = socket.create_connection(('localhost', 5000), 2)
+    s.close()
+    exit(0)
+except:
+    exit(1)
+" 2>/dev/null; then
+                                echo "Application prête (${i}x2s)"
+                                break
+                            fi
+                            sleep 2
+                        done
+                        echo "=== Logs app cible ==="
+                        docker logs zerotrust-target || true
+
+                        # Scan OWASP ZAP baseline
                         docker run --name zap-scan \
                             --network zerotrust-dast \
                             -v zap-wrk:/zap/wrk:rw \
