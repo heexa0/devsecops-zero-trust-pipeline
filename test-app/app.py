@@ -28,7 +28,7 @@ def add_security_headers(response):
     response.headers['Content-Security-Policy'] = (
         "default-src 'self'; script-src 'self'; style-src 'self'; "
         "img-src 'self' data:; font-src 'self'; connect-src 'self'; "
-        "frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
+        "form-action 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
     )
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['X-Frame-Options'] = 'DENY'
@@ -112,6 +112,6 @@ def fetch_url():
     return jsonify({"status": resp.status_code, "content": resp.text[:500]})
 
 
-if __name__ == '__main__':  # nosemgrep
+if __name__ == '__main__':  # nosemgrep: audit.app-run-param-config.avoid_app_run_with_bad_host
     debug_mode = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
     app.run(host='0.0.0.0', port=5000, debug=debug_mode)
