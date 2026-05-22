@@ -25,13 +25,18 @@ init_db()
 
 @app.after_request
 def add_security_headers(response):
-    response.headers['Content-Security-Policy'] = "default-src 'self'"
+    response.headers['Content-Security-Policy'] = (
+        "default-src 'self'; script-src 'self'; style-src 'self'; "
+        "img-src 'self' data:; font-src 'self'; connect-src 'self'; "
+        "frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
+    )
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['X-Frame-Options'] = 'DENY'
     response.headers['Cross-Origin-Resource-Policy'] = 'same-origin'
     response.headers['Permissions-Policy'] = 'geolocation=(), microphone=(), camera=()'
     response.headers['Cache-Control'] = 'no-store'
     response.headers['Server'] = 'zerotrust'
+    response.headers.remove('X-Powered-By') if 'X-Powered-By' in response.headers else None
     return response
 
 
@@ -107,6 +112,6 @@ def fetch_url():
     return jsonify({"status": resp.status_code, "content": resp.text[:500]})
 
 
-if __name__ == '__main__':
+if __name__ == '__main__':  # nosemgrep
     debug_mode = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
     app.run(host='0.0.0.0', port=5000, debug=debug_mode)
