@@ -50,7 +50,7 @@ Sois encourageant, pédagogique et précis. Utilise des emojis."""
  
  
 if __name__ == '__main__':
-    afficher_banniere('Agent Explicatif — Ollama Zero Trust', 'green')
+    afficher_banniere('Agent Explicatif — Dual AI Engine', 'green')
  
     if not verifier_ollama():
         sys.exit(1)
