@@ -354,7 +354,7 @@ except Exception as e:
                         curlimages/curl:latest \
                         curl -sf http://${STAGING_CONTAINER}:5000/ 2>/dev/null)
                     echo "Route / : $RESP"
-                    echo "$RESP" | grep -q "Zero Trust" || {
+                    echo "$RESP" | grep -q "Task Manager API" || {
                         echo "[DEPLOY] ERREUR smoke test route /"
                         docker rm -f ${STAGING_CONTAINER} 2>/dev/null || true
                         exit 1
