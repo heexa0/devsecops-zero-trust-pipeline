@@ -1,12 +1,15 @@
+// jenkins file
 pipeline {
     agent any
 
     environment {
-        IMAGE_NAME   = 'zerotrust-app'
-        OLLAMA_URL   = 'http://ollama:11434'
-        OLLAMA_MODEL = 'llama3.2:3b'
-        REPORTS_DIR  = 'reports'
-        VENV         = '/opt/zerotrust-venv'
+        IMAGE_NAME          = 'zerotrust-app'
+        OLLAMA_URL          = 'http://ollama:11434'
+        OLLAMA_MODEL        = 'llama3.2:3b'
+        REPORTS_DIR         = 'reports'
+        VENV                = '/opt/zerotrust-venv'
+        PROD_CONTAINER      = 'zerotrust-prod'
+        PROD_PORT           = '5002'
     }
 
     options {
@@ -19,58 +22,58 @@ pipeline {
     stages {
 
         stage('0. Préparation') {
-    steps {
-        sh '''
-            # Assurer l'existence du cache apt
-            mkdir -p /var/cache/apt/archives/partial
+            steps {
+                sh '''
+                    # Assurer l'existence du cache apt
+                    mkdir -p /var/cache/apt/archives/partial
 
-            # Python
-            if ! command -v python3 &>/dev/null; then
-                apt-get update -qq && apt-get install -y --no-install-recommends python3 python3-pip python3-venv
-            fi
+                    # Python
+                    if ! command -v python3 &>/dev/null; then
+                        apt-get update -qq && apt-get install -y --no-install-recommends python3 python3-pip python3-venv
+                    fi
 
-            # Trivy via apt (vérification GPG avant installation)
-            if ! command -v trivy &>/dev/null; then
-                apt-get update -qq
-                apt-get install -y --no-install-recommends wget apt-transport-https gnupg
-                wget -qO /tmp/trivy.gpg \
-                    https://aquasecurity.github.io/trivy-repo/deb/public.key
-                # Valider que la clé téléchargée est un fichier GPG non vide
-                if [ ! -s /tmp/trivy.gpg ]; then
-                    echo "ERREUR: clé GPG Trivy vide ou invalide" && exit 1
-                fi
-                gpg --no-default-keyring --keyring /tmp/trivy-check.gpg \
-                    --import /tmp/trivy.gpg 2>/dev/null || true
-                echo "Trivy GPG key info:"
-                gpg --no-default-keyring --keyring /tmp/trivy-check.gpg \
-                    --fingerprint 2>/dev/null || true
-                cp /tmp/trivy.gpg /etc/apt/keyrings/trivy.gpg
-                echo "deb [signed-by=/etc/apt/keyrings/trivy.gpg] \
-                    https://aquasecurity.github.io/trivy-repo/deb generic main" \
-                    > /etc/apt/sources.list.d/trivy.list
-                apt-get update -qq
-                apt-get install -y --no-install-recommends trivy
-            fi
+                    # Trivy via apt (vérification GPG avant installation)
+                    if ! command -v trivy &>/dev/null; then
+                        apt-get update -qq
+                        apt-get install -y --no-install-recommends wget apt-transport-https gnupg
+                        wget -qO /tmp/trivy.gpg \
+                            https://aquasecurity.github.io/trivy-repo/deb/public.key
+                        # Valider que la clé téléchargée est un fichier GPG non vide
+                        if [ ! -s /tmp/trivy.gpg ]; then
+                            echo "ERREUR: clé GPG Trivy vide ou invalide" && exit 1
+                        fi
+                        gpg --no-default-keyring --keyring /tmp/trivy-check.gpg \
+                            --import /tmp/trivy.gpg 2>/dev/null || true
+                        echo "Trivy GPG key info:"
+                        gpg --no-default-keyring --keyring /tmp/trivy-check.gpg \
+                            --fingerprint 2>/dev/null || true
+                        cp /tmp/trivy.gpg /etc/apt/keyrings/trivy.gpg
+                        echo "deb [signed-by=/etc/apt/keyrings/trivy.gpg] \
+                            https://aquasecurity.github.io/trivy-repo/deb generic main" \
+                            > /etc/apt/sources.list.d/trivy.list
+                        apt-get update -qq
+                        apt-get install -y --no-install-recommends trivy
+                    fi
 
-            # Docker CLI — binaire statique officiel dans /usr/local/bin (toujours dans PATH)
-            if ! command -v docker &>/dev/null; then
-                wget -qO /tmp/docker.tgz \
-                    https://download.docker.com/linux/static/stable/x86_64/docker-27.3.1.tgz
-                tar -xzf /tmp/docker.tgz -C /usr/local/bin/ \
-                    --strip-components=1 docker/docker
-                chmod +x /usr/local/bin/docker
-                rm -f /tmp/docker.tgz
-            fi
-            docker --version
+                    # Docker CLI — binaire statique officiel dans /usr/local/bin (toujours dans PATH)
+                    if ! command -v docker &>/dev/null; then
+                        wget -qO /tmp/docker.tgz \
+                            https://download.docker.com/linux/static/stable/x86_64/docker-27.3.1.tgz
+                        tar -xzf /tmp/docker.tgz -C /usr/local/bin/ \
+                            --strip-components=1 docker/docker
+                        chmod +x /usr/local/bin/docker
+                        rm -f /tmp/docker.tgz
+                    fi
+                    docker --version
 
-            mkdir -p ${REPORTS_DIR}
-            python3 -m venv ${VENV}
-            ${VENV}/bin/pip install --quiet semgrep anthropic rich requests pydantic reportlab
-            echo '=== Vérification moteurs IA ==='
-            ${VENV}/bin/python3 agent/ollama_client.py
-        '''
-    }
-}
+                    mkdir -p ${REPORTS_DIR}
+                    python3 -m venv ${VENV}
+                    ${VENV}/bin/pip install --quiet semgrep anthropic rich requests pydantic reportlab
+                    echo '=== Vérification moteurs IA ==='
+                    ${VENV}/bin/python3 agent/ollama_client.py
+                '''
+            }
+        }
 
         stage('1. SAST - Semgrep') {
             steps {
@@ -294,7 +297,146 @@ except Exception as e:
             }
         }
 
+        stage('8. Deploy - Production') {
+            steps {
+
+                // ── 1. Arrêter l'ancienne prod proprement ─────────────────────
+                sh '''
+                    echo "[DEPLOY] Arrêt de l'ancienne instance prod (si existante)..."
+                    docker stop ${PROD_CONTAINER} 2>/dev/null || true
+                    docker rm   ${PROD_CONTAINER} 2>/dev/null || true
+                    echo "[DEPLOY] Nettoyage OK"
+                '''
+
+                // ── 2. Déployer staging (healthcheck avant promo) ─────────────
+                sh '''
+                    echo "[DEPLOY] Démarrage du conteneur staging..."
+                    docker run -d \
+                        --name   ${STAGING_CONTAINER} \
+                        --network ${STAGING_NETWORK} \
+                        -p ${STAGING_PORT}:5000 \
+                        --restart unless-stopped \
+                        ${IMAGE_NAME}:${BUILD_NUMBER}
+
+                    echo "[DEPLOY] Attente démarrage Flask (max 30s)..."
+                    TRIES=0
+                    until docker run --rm \
+                            --network ${STAGING_NETWORK} \
+                            curlimages/curl:latest \
+                            curl -sf http://${STAGING_CONTAINER}:5000/health \
+                            2>/dev/null || [ $TRIES -ge 15 ]; do
+                        TRIES=$((TRIES+1))
+                        sleep 2
+                    done
+
+                    # Vérifier que le healthcheck a réussi (pas juste timeout)
+                    docker run --rm \
+                        --network ${STAGING_NETWORK} \
+                        curlimages/curl:latest \
+                        curl -sf http://${STAGING_CONTAINER}:5000/health || {
+                        echo "[DEPLOY] ERREUR : Flask ne répond pas — déploiement annulé"
+                        docker rm -f ${STAGING_CONTAINER} 2>/dev/null || true
+                        exit 1
+                    }
+                    echo "[DEPLOY] Flask staging opérationnel en ${TRIES} tentatives"
+                '''
+
+                // ── 3. Smoke tests fonctionnels ───────────────────────────────
+                sh '''
+                    echo "[DEPLOY] Smoke tests..."
+
+                    # Test 1 : route racine
+                    RESP=$(docker run --rm \
+                        --network ${STAGING_NETWORK} \
+                        curlimages/curl:latest \
+                        curl -sf http://${STAGING_CONTAINER}:5000/ 2>/dev/null)
+                    echo "Route / : $RESP"
+                    echo "$RESP" | grep -q "Zero Trust" || {
+                        echo "[DEPLOY] ERREUR smoke test route /"
+                        docker rm -f ${STAGING_CONTAINER} 2>/dev/null || true
+                        exit 1
+                    }
+
+                    # Test 2 : health explicite
+                    HEALTH=$(docker run --rm \
+                        --network ${STAGING_NETWORK} \
+                        curlimages/curl:latest \
+                        curl -sf http://${STAGING_CONTAINER}:5000/health 2>/dev/null)
+                    echo "Route /health : $HEALTH"
+                    echo "$HEALTH" | grep -q "ok" || {
+                        echo "[DEPLOY] ERREUR smoke test /health"
+                        docker rm -f ${STAGING_CONTAINER} 2>/dev/null || true
+                        exit 1
+                    }
+
+                    echo "[DEPLOY] Tous les smoke tests OK"
+                '''
+
+                // ── 4. Promotion staging → production ─────────────────────────
+                sh '''
+                    echo "[DEPLOY] Promotion vers production..."
+
+                    # Stopper le staging (il a servi à valider)
+                    docker stop ${STAGING_CONTAINER} 2>/dev/null || true
+                    docker rm   ${STAGING_CONTAINER} 2>/dev/null || true
+
+                    # Lancer le conteneur de production avec nom stable
+                    docker run -d \
+                        --name   ${PROD_CONTAINER} \
+                        --network ${STAGING_NETWORK} \
+                        -p ${PROD_PORT}:5000 \
+                        --restart unless-stopped \
+                        -l deploy.build="${BUILD_NUMBER}" \
+                        -l deploy.image="${IMAGE_NAME}:${BUILD_NUMBER}" \
+                        ${IMAGE_NAME}:${BUILD_NUMBER}
+
+                    # Vérification finale prod
+                    sleep 3
+                    docker run --rm \
+                        --network ${STAGING_NETWORK} \
+                        curlimages/curl:latest \
+                        curl -sf http://${PROD_CONTAINER}:5000/health || {
+                        echo "[DEPLOY] ERREUR : prod ne répond pas !"
+                        exit 1
+                    }
+
+                    echo "[DEPLOY] ============================================"
+                    echo "[DEPLOY] PRODUCTION DÉPLOYÉE — Build ${BUILD_NUMBER}"
+                    echo "[DEPLOY] Image    : ${IMAGE_NAME}:${BUILD_NUMBER}"
+                    echo "[DEPLOY] Container: ${PROD_CONTAINER}"
+                    echo "[DEPLOY] Port hôte: ${PROD_PORT} → accès : http://localhost:${PROD_PORT}"
+                    echo "[DEPLOY] ============================================"
+                '''
+
+                // ── 5. Tag 'latest' pour traçabilité ──────────────────────────
+                sh 'docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${IMAGE_NAME}:latest'
+            }
+
+            post {
+                success {
+                    echo "[DEPLOY] Déploiement production réussi — Build ${BUILD_NUMBER}"
+                }
+                failure {
+                    // Rollback : nettoyer les conteneurs de ce build en cas d'échec
+                    sh '''
+                        echo "[DEPLOY] ÉCHEC — rollback en cours..."
+                        docker rm -f ${STAGING_CONTAINER} 2>/dev/null || true
+                        docker rm -f ${PROD_CONTAINER}    2>/dev/null || true
+                        echo "[DEPLOY] Rollback terminé"
+                    '''
+                }
+                always {
+                    sh '''
+                        echo "[DEPLOY] État des conteneurs zerotrust :"
+                        docker ps --filter "name=zerotrust" \
+                            --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" || true
+                    '''
+                }
+            }
+        }
+
     } // end stages
+
 // hafssa jihad hhhhh
     post {
         always  { deleteDir() }
