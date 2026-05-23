@@ -10,6 +10,9 @@ pipeline {
         VENV                = '/opt/zerotrust-venv'
         PROD_CONTAINER      = 'zerotrust-prod'
         PROD_PORT           = '5002'
+        STAGING_CONTAINER = 'zerotrust-staging'
+        STAGING_NETWORK   = 'devsecops-zero-trust-pipeline_zerotrust-net'
+        STAGING_PORT      = '5001'
     }
 
     options {
