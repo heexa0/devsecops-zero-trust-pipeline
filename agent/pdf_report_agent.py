@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -226,25 +227,85 @@ def section_dast(st, zap):
     return story
 
 
-def section_ai_guard(st, remediation):
+def _clean_md(line: str) -> str:
+    """Convertit une ligne Markdown en texte propre pour ReportLab."""
+    line = line.strip()
+    # Sauter les séparateurs et lignes de tableaux
+    if re.match(r'^[-=|*_]{2,}$', line) or line.startswith('|'):
+        return ''
+    # Supprimer les préfixes de titres
+    line = re.sub(r'^#{1,6}\s*', '', line)
+    # Supprimer le gras/italique (**text** → text, *text* → text)
+    line = re.sub(r'\*{1,3}([^*]+)\*{1,3}', r'\1', line)
+    # Supprimer les backticks
+    line = re.sub(r'`([^`]+)`', r'\1', line)
+    # Supprimer les liens Markdown [text](url) → text
+    line = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', line)
+    # Supprimer les caractères mal encodés résiduels
+    line = re.sub(r'Ã[^\s]*', '', line)
+    return line.strip()
+
+
+def _extraire_resume_explicatif(content: str) -> list:
+    """Extrait les points clés du rapport Markdown (Executive Summary + plan)."""
+    lines = content.splitlines()
+    result = []
+    in_section = False
+    count = 0
+
+    for line in lines:
+        stripped = line.strip()
+        # Détecter les sections importantes
+        if re.match(r'^#{1,3}.*(summary|executive|remediation|plan|posture|finding)', stripped, re.I):
+            in_section = True
+            clean = _clean_md(stripped)
+            if clean:
+                result.append(('heading', clean))
+            continue
+        # Arrêter après 3 sections ou 15 lignes utiles
+        if in_section and re.match(r'^#{1,3}', stripped) and count >= 3:
+            break
+        if in_section and re.match(r'^#{1,3}', stripped):
+            count += 1
+            clean = _clean_md(stripped)
+            if clean:
+                result.append(('heading', clean))
+            continue
+        if in_section and stripped:
+            clean = _clean_md(stripped)
+            if clean and len(clean) > 10:
+                result.append(('text', clean[:150]))
+
+    # Fallback : prendre les 8 premières lignes utiles
+    if not result:
+        for line in lines:
+            clean = _clean_md(line)
+            if clean and len(clean) > 10:
+                result.append(('text', clean[:150]))
+            if len(result) >= 8:
+                break
+    return result
+
+
+def section_ai_guard(st, remediation, trivy):
+    subhead = ParagraphStyle('sh', fontSize=10, textColor=C_DARK,
+                             fontName='Helvetica-Bold', spaceBefore=6, spaceAfter=4)
     story = [Paragraph('4 — AI Security Guard', st['h1'])]
 
-    # Anti-Tampering
-    story.append(Paragraph('4.1 — Anti-Tampering', ParagraphStyle(
-        'sh', fontSize=10, textColor=C_DARK, fontName='Helvetica-Bold',
-        spaceBefore=6, spaceAfter=4
-    )))
+    # 4.1 Anti-Tampering
+    story.append(Paragraph('4.1 — Anti-Tampering', subhead))
     story.append(Paragraph('Pipeline verifie — aucune modification non autorisee detectee.', st['ok']))
     story.append(Spacer(1, 0.2*cm))
 
-    # Remédiation CVE
-    story.append(Paragraph('4.2 — Remediation CVE (IA)', ParagraphStyle(
-        'sh', fontSize=10, textColor=C_DARK, fontName='Helvetica-Bold',
-        spaceBefore=6, spaceAfter=4
-    )))
+    # 4.2 Remédiation CVE — valider contre le scan Trivy courant
+    story.append(Paragraph('4.2 — Remediation CVE (IA)', subhead))
+    actual_cves = [v for r in trivy.get('Results', []) for v in (r.get('Vulnerabilities') or [])]
     fixes = remediation.get('vulnerabilites', remediation.get('vulnerabilities', []))
-    if not fixes:
-        story.append(Paragraph('Aucune remediation disponible.', st['warn']))
+
+    if not actual_cves:
+        story.append(Paragraph('Aucune CVE detectee dans ce build — aucune remediation necessaire.', st['ok']))
+    elif not fixes:
+        story.append(Paragraph('Rapport de remediation non disponible.', st['warn']))
     else:
         data = [['CVE', 'Package', 'Priorite', 'Correction requirements.txt']]
         for f in fixes:
@@ -257,22 +318,21 @@ def section_ai_guard(st, remediation):
         story.append(_tbl(data, [3.8*cm, 3*cm, 2.5*cm, 7.2*cm],
                           [colors.HexColor('#e8f5e9'), colors.white]))
 
-    # Rapport Explicatif
+    # 4.3 Rapport Explicatif
     story.append(Spacer(1, 0.3*cm))
-    story.append(Paragraph('4.3 — Rapport Explicatif (IA)', ParagraphStyle(
-        'sh', fontSize=10, textColor=C_DARK, fontName='Helvetica-Bold',
-        spaceBefore=6, spaceAfter=4
-    )))
+    story.append(Paragraph('4.3 — Rapport Explicatif (IA)', subhead))
     explicatif_path = Path('rapport-explicatif.md')
     if explicatif_path.exists():
-        content = explicatif_path.read_text(encoding='utf-8')
-        # Extrait les 10 premières lignes non vides
-        lines = [l.strip() for l in content.splitlines() if l.strip()][:10]
-        for line in lines:
-            clean = line.lstrip('#').strip()
-            if clean:
-                story.append(Paragraph(clean[:120], st['small']))
-        story.append(Paragraph('Rapport complet disponible : rapport-explicatif.md', st['small']))
+        content = explicatif_path.read_text(encoding='utf-8', errors='replace')
+        items = _extraire_resume_explicatif(content)
+        for kind, text in items:
+            style = ParagraphStyle(
+                'exh', fontSize=9, textColor=C_DARK,
+                fontName='Helvetica-Bold', spaceBefore=3, spaceAfter=2
+            ) if kind == 'heading' else st['small']
+            story.append(Paragraph(text, style))
+        story.append(Spacer(1, 0.15*cm))
+        story.append(Paragraph('[ Rapport complet : rapport-explicatif.md ]', st['small']))
     else:
         story.append(Paragraph('Rapport explicatif non disponible pour ce build.', st['warn']))
 
@@ -393,7 +453,7 @@ def generate_pdf():
     story += section_sast(st, semgrep)
     story += section_sca(st, trivy)
     story += section_dast(st, zap)
-    story += section_ai_guard(st, remediation)
+    story += section_ai_guard(st, remediation, trivy)
     story += section_security_gate(st, gate)
     story += section_build(st)
 
