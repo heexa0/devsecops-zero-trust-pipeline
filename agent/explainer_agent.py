@@ -1,5 +1,4 @@
 import sys
-from pathlib import Path
 from rich.console import Console
 from rich.markdown import Markdown
  
@@ -110,7 +109,7 @@ Génère un rapport Markdown technique structuré avec :
 
 Style : direct, factuel. Terminologie OWASP, CVSSv3, NIST, CWE. Pas d'emojis."""
 
-    return appeler_ollama(prompt)
+    return appeler_ollama(prompt, max_tokens=6000)
  
  
 if __name__ == '__main__':

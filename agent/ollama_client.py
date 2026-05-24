@@ -38,14 +38,14 @@ def verifier_ollama():
         return False
     return True
 
-def _call_claude(prompt):
+def _call_claude(prompt, max_tokens=4096):
     try:
         console.print('[blue]→ Claude API...[/blue]')
         resp = requests.post(
             'https://api.anthropic.com/v1/messages',
             headers={'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json'},
-            json={'model': CLOUD_MODEL, 'max_tokens': 1024, 'messages': [{'role': 'user', 'content': prompt}]},
-            timeout=60
+            json={'model': CLOUD_MODEL, 'max_tokens': max_tokens, 'messages': [{'role': 'user', 'content': prompt}]},
+            timeout=120
         )
         resp.raise_for_status()
         console.print('[green]Claude OK[/green]')
@@ -54,13 +54,13 @@ def _call_claude(prompt):
         console.print(f'[red]Claude échoué : {e} → bascule Ollama[/red]')
         return ''
 
-def _call_ollama(prompt):
+def _call_ollama(prompt, max_tokens=2048):
     try:
         console.print(f'[blue]→ Ollama local ({OLLAMA_MODEL})...[/blue]')
         resp = requests.post(
             f'{OLLAMA_URL}/api/generate',
             json={'model': OLLAMA_MODEL, 'prompt': prompt, 'stream': False,
-                  'options': {'temperature': 0.1, 'num_predict': 512}},
+                  'options': {'temperature': 0.1, 'num_predict': max_tokens}},
             timeout=300
         )
         resp.raise_for_status()
@@ -70,15 +70,15 @@ def _call_ollama(prompt):
         console.print(f'[red]Ollama échoué : {e}[/red]')
         return ''
 
-def appeler_ollama(prompt, model=None):
+def appeler_ollama(prompt, model=None, max_tokens=4096):
     global _dernier_moteur
     if _claude_ok():
-        r = _call_claude(prompt)
+        r = _call_claude(prompt, max_tokens=max_tokens)
         if r:
             _dernier_moteur = 'Claude'
             return r
     if _ollama_ok():
-        r = _call_ollama(prompt)
+        r = _call_ollama(prompt, max_tokens=min(max_tokens, 2048))
         if r:
             _dernier_moteur = 'Ollama'
             return r
