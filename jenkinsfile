@@ -286,7 +286,22 @@ except Exception as e:
             }
         }
 
-        stage('8. Rapport PDF') {
+        stage('8. Security Gate') {
+            steps {
+                sh '''
+                    cp ${REPORTS_DIR}/*.json agent/ 2>/dev/null || true
+                    REPORTS_DIR=${WORKSPACE}/${REPORTS_DIR} ${VENV}/bin/python3 agent/security_gate.py
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: "${REPORTS_DIR}/security-gate.json",
+                                     allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('9. Rapport PDF') {
             steps {
                 sh '''
                     cp ${REPORTS_DIR}/*.json agent/ 2>/dev/null || true
@@ -297,20 +312,6 @@ except Exception as e:
             post {
                 always {
                     archiveArtifacts artifacts: "${REPORTS_DIR}/rapport-zerotrust.pdf",
-                                     allowEmptyArchive: true
-                }
-            }
-        }
-        stage('9. Security Gate') {
-            steps {
-                sh '''
-                    cp ${REPORTS_DIR}/*.json agent/ 2>/dev/null || true
-                    REPORTS_DIR=${WORKSPACE}/${REPORTS_DIR} ${VENV}/bin/python3 agent/security_gate.py
-                '''
-            }
-            post {
-                always {
-                    archiveArtifacts artifacts: "${REPORTS_DIR}/security-gate.json",
                                      allowEmptyArchive: true
                 }
             }
