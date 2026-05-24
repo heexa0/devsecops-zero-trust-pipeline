@@ -133,59 +133,19 @@ except Exception as e:
             }
         }
 
-        stage('3. AI Security Guard') {
-            stages {
-                stage('3a. Anti-Tampering') {
-                    steps {
-                        sh 'cp ${REPORTS_DIR}/trivy-report.json agent/ || true'
-                        sh 'cp ${REPORTS_DIR}/semgrep-results.json agent/ || true'
-                        withCredentials([string(credentialsId: 'ANTHROPIC_API_KEY', variable: 'ANTHROPIC_API_KEY')]) {
-                            catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                                sh 'cd agent && PIPELINE_PATH=${WORKSPACE}/jenkinsfile ${VENV}/bin/python3 antitamper_agent.py'
-                            }
-                        }
-                    }
-                }
-                stage('3b. Remédiation CVE') {
-                    steps {
-                        withCredentials([string(credentialsId: 'ANTHROPIC_API_KEY', variable: 'ANTHROPIC_API_KEY')]) {
-                            catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                                sh 'cd agent && ${VENV}/bin/python3 remediation_agent.py'
-                            }
-                        }
-                    }
-                }
-                stage('3c. Rapport Explicatif') {
-                    steps {
-                        withCredentials([string(credentialsId: 'ANTHROPIC_API_KEY', variable: 'ANTHROPIC_API_KEY')]) {
-                            catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                                sh 'cd agent && ${VENV}/bin/python3 explainer_agent.py'
-                            }
-                        }
-                    }
-                }
-            }
-            post {
-                always {
-                    archiveArtifacts artifacts: 'agent/*.json,agent/*.md',
-                                     allowEmptyArchive: true
-                }
-            }
-        }
-
-        stage('4. Build Docker') {
+        stage('3. Build Docker') {
             steps {
                 sh 'docker build -t ${IMAGE_NAME}:${BUILD_NUMBER} .'
             }
         }
 
-        stage('5. Scan Image Docker') {
+        stage('4. Scan Image Docker') {
             steps {
                 sh 'trivy image --severity CRITICAL --exit-code 0 ${IMAGE_NAME}:${BUILD_NUMBER}'
             }
         }
 
-        stage('5b. DAST - OWASP ZAP') {
+        stage('5. DAST - OWASP ZAP') {
             steps {
                 catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
                     sh '''
@@ -266,7 +226,50 @@ except Exception as e:
             }
         }
 
-        stage('6. Signature Cosign') {
+        stage('6. AI Security Guard') {
+            stages {
+                stage('Anti-Tampering') {
+                    steps {
+                        sh '''
+                            cp ${REPORTS_DIR}/trivy-report.json agent/ 2>/dev/null || true
+                            cp ${REPORTS_DIR}/semgrep-results.json agent/ 2>/dev/null || true
+                            cp ${REPORTS_DIR}/zap-report.json agent/ 2>/dev/null || true
+                        '''
+                        withCredentials([string(credentialsId: 'ANTHROPIC_API_KEY', variable: 'ANTHROPIC_API_KEY')]) {
+                            catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                                sh 'cd agent && PIPELINE_PATH=${WORKSPACE}/jenkinsfile ${VENV}/bin/python3 antitamper_agent.py'
+                            }
+                        }
+                    }
+                }
+                stage('Remédiation CVE') {
+                    steps {
+                        withCredentials([string(credentialsId: 'ANTHROPIC_API_KEY', variable: 'ANTHROPIC_API_KEY')]) {
+                            catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                                sh 'cd agent && ${VENV}/bin/python3 remediation_agent.py'
+                            }
+                        }
+                    }
+                }
+                stage('Rapport Explicatif') {
+                    steps {
+                        withCredentials([string(credentialsId: 'ANTHROPIC_API_KEY', variable: 'ANTHROPIC_API_KEY')]) {
+                            catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                                sh 'cd agent && ${VENV}/bin/python3 explainer_agent.py'
+                            }
+                        }
+                    }
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'agent/*.json,agent/*.md',
+                                     allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('7. Signature Cosign') {
             steps {
                 sh '''
                     if ! command -v cosign &>/dev/null; then
@@ -283,7 +286,7 @@ except Exception as e:
             }
         }
 
-        stage('7. Rapport PDF') {
+        stage('8. Rapport PDF') {
             steps {
                 sh '''
                     cp ${REPORTS_DIR}/*.json agent/ 2>/dev/null || true
@@ -298,7 +301,7 @@ except Exception as e:
                 }
             }
         }
-        stage('7b. Security Gate') {
+        stage('9. Security Gate') {
             steps {
                 sh '''
                     cp ${REPORTS_DIR}/*.json agent/ 2>/dev/null || true
@@ -313,7 +316,7 @@ except Exception as e:
             }
         }
 
-        stage('8. Deploy - Production') {
+        stage('10. Deploy - Production') {
             steps {
 
                 // ── 1. Arrêter l'ancienne prod proprement ─────────────────────
