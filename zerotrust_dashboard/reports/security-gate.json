@@ -1,0 +1,16 @@
+{
+  "score": 95,
+  "grade": "A",
+  "gate_passed": true,
+  "threshold": 90,
+  "penalties": {
+    "cve_critical": 0,
+    "cve_high": 0,
+    "cve_medium": 0,
+    "cve_low": 0,
+    "sast_critical": 0,
+    "sast_high": 1,
+    "dast_high": 0,
+    "dast_medium": 0
+  }
+}

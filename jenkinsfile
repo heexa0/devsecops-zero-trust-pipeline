@@ -2,13 +2,13 @@ pipeline {
     agent any
 
     environment {
-        IMAGE_NAME          = 'zerotrust-app'
-        OLLAMA_URL          = 'http://ollama:11434'
-        OLLAMA_MODEL        = 'llama3.2:3b'
-        REPORTS_DIR         = 'reports'
-        VENV                = '/opt/zerotrust-venv'
-        PROD_CONTAINER      = 'zerotrust-prod'
-        PROD_PORT           = '5002'
+        IMAGE_NAME        = 'zerotrust-app'
+        OLLAMA_URL        = 'http://ollama:11434'
+        OLLAMA_MODEL      = 'llama3.2:3b'
+        REPORTS_DIR       = 'reports'
+        VENV              = '/opt/zerotrust-venv'
+        PROD_CONTAINER    = 'zerotrust-prod'
+        PROD_PORT         = '5003'   // ← FIX: était 5002, occupé par Jenkins dans docker-compose
         STAGING_CONTAINER = 'zerotrust-staging'
         STAGING_NETWORK   = 'devsecops-zero-trust-pipeline_zerotrust-net'
         STAGING_PORT      = '5001'
@@ -24,58 +24,57 @@ pipeline {
     stages {
 
         stage('0. Préparation') {
-    steps {
-        sh '''
-            # Assurer l'existence du cache apt
-            mkdir -p /var/cache/apt/archives/partial
+            steps {
+                sh '''
+                    # Assurer l'existence du cache apt
+                    mkdir -p /var/cache/apt/archives/partial
 
-            # Python
-            if ! command -v python3 &>/dev/null; then
-                apt-get update -qq && apt-get install -y --no-install-recommends python3 python3-pip python3-venv
-            fi
+                    # Python
+                    if ! command -v python3 &>/dev/null; then
+                        apt-get update -qq && apt-get install -y --no-install-recommends python3 python3-pip python3-venv
+                    fi
 
-            # Trivy via apt (vérification GPG avant installation)
-            if ! command -v trivy &>/dev/null; then
-                apt-get update -qq
-                apt-get install -y --no-install-recommends wget apt-transport-https gnupg
-                wget -qO /tmp/trivy.gpg \
-                    https://aquasecurity.github.io/trivy-repo/deb/public.key
-                # Valider que la clé téléchargée est un fichier GPG non vide
-                if [ ! -s /tmp/trivy.gpg ]; then
-                    echo "ERREUR: clé GPG Trivy vide ou invalide" && exit 1
-                fi
-                gpg --no-default-keyring --keyring /tmp/trivy-check.gpg \
-                    --import /tmp/trivy.gpg 2>/dev/null || true
-                echo "Trivy GPG key info:"
-                gpg --no-default-keyring --keyring /tmp/trivy-check.gpg \
-                    --fingerprint 2>/dev/null || true
-                cp /tmp/trivy.gpg /etc/apt/keyrings/trivy.gpg
-                echo "deb [signed-by=/etc/apt/keyrings/trivy.gpg] \
-                    https://aquasecurity.github.io/trivy-repo/deb generic main" \
-                    > /etc/apt/sources.list.d/trivy.list
-                apt-get update -qq
-                apt-get install -y --no-install-recommends trivy
-            fi
+                    # Trivy via apt (vérification GPG avant installation)
+                    if ! command -v trivy &>/dev/null; then
+                        apt-get update -qq
+                        apt-get install -y --no-install-recommends wget apt-transport-https gnupg
+                        wget -qO /tmp/trivy.gpg \
+                            https://aquasecurity.github.io/trivy-repo/deb/public.key
+                        if [ ! -s /tmp/trivy.gpg ]; then
+                            echo "ERREUR: clé GPG Trivy vide ou invalide" && exit 1
+                        fi
+                        gpg --no-default-keyring --keyring /tmp/trivy-check.gpg \
+                            --import /tmp/trivy.gpg 2>/dev/null || true
+                        echo "Trivy GPG key info:"
+                        gpg --no-default-keyring --keyring /tmp/trivy-check.gpg \
+                            --fingerprint 2>/dev/null || true
+                        cp /tmp/trivy.gpg /etc/apt/keyrings/trivy.gpg
+                        echo "deb [signed-by=/etc/apt/keyrings/trivy.gpg] \
+                            https://aquasecurity.github.io/trivy-repo/deb generic main" \
+                            > /etc/apt/sources.list.d/trivy.list
+                        apt-get update -qq
+                        apt-get install -y --no-install-recommends trivy
+                    fi
 
-            # Docker CLI — binaire statique officiel dans /usr/local/bin (toujours dans PATH)
-            if ! command -v docker &>/dev/null; then
-                wget -qO /tmp/docker.tgz \
-                    https://download.docker.com/linux/static/stable/x86_64/docker-27.3.1.tgz
-                tar -xzf /tmp/docker.tgz -C /usr/local/bin/ \
-                    --strip-components=1 docker/docker
-                chmod +x /usr/local/bin/docker
-                rm -f /tmp/docker.tgz
-            fi
-            docker --version
+                    # Docker CLI — binaire statique officiel dans /usr/local/bin
+                    if ! command -v docker &>/dev/null; then
+                        wget -qO /tmp/docker.tgz \
+                            https://download.docker.com/linux/static/stable/x86_64/docker-27.3.1.tgz
+                        tar -xzf /tmp/docker.tgz -C /usr/local/bin/ \
+                            --strip-components=1 docker/docker
+                        chmod +x /usr/local/bin/docker
+                        rm -f /tmp/docker.tgz
+                    fi
+                    docker --version
 
-            mkdir -p ${REPORTS_DIR}
-            python3 -m venv ${VENV}
-            ${VENV}/bin/pip install --quiet semgrep anthropic rich requests pydantic reportlab
-            echo '=== Vérification moteurs IA ==='
-            ${VENV}/bin/python3 agent/ollama_client.py
-        '''
-    }
-}
+                    mkdir -p ${REPORTS_DIR}
+                    python3 -m venv ${VENV}
+                    ${VENV}/bin/pip install --quiet semgrep anthropic rich requests pydantic reportlab
+                    echo '=== Vérification moteurs IA ==='
+                    ${VENV}/bin/python3 agent/ollama_client.py
+                '''
+            }
+        }
 
         stage('1. SAST - Semgrep') {
             steps {
@@ -151,16 +150,13 @@ except Exception as e:
                     sh '''
                         docker network create zerotrust-dast 2>/dev/null || true
 
-                        # Volume ZAP avec permissions ouvertes (ZAP tourne en user zap UID 1000)
                         docker volume create zap-wrk 2>/dev/null || true
                         docker run --rm -v zap-wrk:/zap/wrk busybox chmod 777 /zap/wrk
 
-                        # Démarrer l'application cible
                         docker run -d --name zerotrust-target \
                             --network zerotrust-dast \
                             zerotrust-app:${BUILD_NUMBER}
 
-                        # Attendre que Flask soit vraiment prêt (socket check)
                         echo "Attente démarrage de l\'application..."
                         for i in $(seq 1 20); do
                             if docker exec zerotrust-target python3 -c "
@@ -180,7 +176,6 @@ except:
                         echo "=== Logs app cible ==="
                         docker logs zerotrust-target || true
 
-                        # Scan OWASP ZAP baseline
                         docker run --name zap-scan \
                             --network zerotrust-dast \
                             -v zap-wrk:/zap/wrk:rw \
@@ -191,14 +186,12 @@ except:
                             -r zap-report.html \
                             -I || true
 
-                        # Extraire via Alpine (stdout → fichier local Jenkins)
                         docker run --rm -v zap-wrk:/zap/wrk:ro alpine \
                             cat /zap/wrk/zap-report.json > ${REPORTS_DIR}/zap-report.json 2>/dev/null || true
                         docker run --rm -v zap-wrk:/zap/wrk:ro alpine \
                             cat /zap/wrk/zap-report.html > ${REPORTS_DIR}/zap-report.html 2>/dev/null || true
                         cp ${REPORTS_DIR}/zap-report.json agent/zap-report.json 2>/dev/null || true
 
-                        # Résumé rapide
                         ${VENV}/bin/python3 -c "
 import json
 try:
@@ -277,7 +270,6 @@ except Exception as e:
                             -o /usr/local/bin/cosign && chmod +x /usr/local/bin/cosign
                     fi
                     cosign version
-                    # Signature keyless OIDC (mode zero-trust, sans clé statique)
                     COSIGN_EXPERIMENTAL=1 cosign sign --yes \
                         ${IMAGE_NAME}:${BUILD_NUMBER} 2>/dev/null || \
                         echo "INFO: Signature keyless ignorée hors OIDC — image construite et vérifiée localement"
@@ -320,11 +312,31 @@ except Exception as e:
         stage('10. Deploy - Production') {
             steps {
 
+                // ── 0. Vérifier que le port prod est libre ────────────────────
+                sh '''
+                    echo "[DEPLOY] Vérification disponibilité port ${PROD_PORT}..."
+                    HOLDER=$(docker ps --format "{{.Names}}\t{{.Ports}}" \
+                        | grep "0.0.0.0:${PROD_PORT}->" | awk "{print \$1}" || true)
+                    if [ -n "$HOLDER" ]; then
+                        echo "[DEPLOY] ERREUR : port ${PROD_PORT} déjà occupé par le conteneur : $HOLDER"
+                        echo "[DEPLOY] Changer PROD_PORT dans le Jenkinsfile ou libérer ce port."
+                        exit 1
+                    fi
+                    echo "[DEPLOY] Port ${PROD_PORT} disponible ✓"
+                '''
+
                 // ── 1. Arrêter l'ancienne prod proprement ─────────────────────
                 sh '''
                     echo "[DEPLOY] Arrêt de l'ancienne instance prod (si existante)..."
                     docker stop ${PROD_CONTAINER} 2>/dev/null || true
                     docker rm   ${PROD_CONTAINER} 2>/dev/null || true
+
+                    # Sécurité : forcer la libération du port si un conteneur orphelin le tient
+                    ORPHAN=$(docker ps -q --filter "publish=${PROD_PORT}" 2>/dev/null || true)
+                    if [ -n "$ORPHAN" ]; then
+                        echo "[DEPLOY] Conteneur orphelin sur port ${PROD_PORT} détecté ($ORPHAN) — suppression forcée"
+                        docker rm -f $ORPHAN 2>/dev/null || true
+                    fi
                     echo "[DEPLOY] Nettoyage OK"
                 '''
 
@@ -349,7 +361,6 @@ except Exception as e:
                         sleep 2
                     done
 
-                    # Vérifier que le healthcheck a réussi (pas juste timeout)
                     docker run --rm \
                         --network ${STAGING_NETWORK} \
                         curlimages/curl:latest \
@@ -365,7 +376,6 @@ except Exception as e:
                 sh '''
                     echo "[DEPLOY] Smoke tests..."
 
-                    # Test 1 : route racine
                     RESP=$(docker run --rm \
                         --network ${STAGING_NETWORK} \
                         curlimages/curl:latest \
@@ -377,7 +387,6 @@ except Exception as e:
                         exit 1
                     }
 
-                    # Test 2 : health explicite
                     HEALTH=$(docker run --rm \
                         --network ${STAGING_NETWORK} \
                         curlimages/curl:latest \
@@ -396,11 +405,9 @@ except Exception as e:
                 sh '''
                     echo "[DEPLOY] Promotion vers production..."
 
-                    # Stopper le staging (il a servi à valider)
                     docker stop ${STAGING_CONTAINER} 2>/dev/null || true
                     docker rm   ${STAGING_CONTAINER} 2>/dev/null || true
 
-                    # Lancer le conteneur de production avec nom stable
                     docker run -d \
                         --name   ${PROD_CONTAINER} \
                         --network ${STAGING_NETWORK} \
@@ -410,7 +417,6 @@ except Exception as e:
                         -l deploy.image="${IMAGE_NAME}:${BUILD_NUMBER}" \
                         ${IMAGE_NAME}:${BUILD_NUMBER}
 
-                    # Vérification finale prod
                     sleep 3
                     docker run --rm \
                         --network ${STAGING_NETWORK} \
@@ -437,7 +443,6 @@ except Exception as e:
                     echo "[DEPLOY] Déploiement production réussi — Build ${BUILD_NUMBER}"
                 }
                 failure {
-                    // Rollback : nettoyer les conteneurs de ce build en cas d'échec
                     sh '''
                         echo "[DEPLOY] ÉCHEC — rollback en cours..."
                         docker rm -f ${STAGING_CONTAINER} 2>/dev/null || true
