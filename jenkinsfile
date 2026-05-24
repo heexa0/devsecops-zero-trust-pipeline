@@ -298,6 +298,21 @@ except Exception as e:
                 }
             }
         }
+        stage('7b. Security Gate') {
+            steps {
+                sh '''
+                    cp ${REPORTS_DIR}/*.json agent/ 2>/dev/null || true
+                    REPORTS_DIR=${WORKSPACE}/${REPORTS_DIR} ${VENV}/bin/python3 agent/security_gate.py
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: "${REPORTS_DIR}/security-gate.json",
+                                     allowEmptyArchive: true
+                }
+            }
+        }
+
         stage('8. Deploy - Production') {
             steps {
 

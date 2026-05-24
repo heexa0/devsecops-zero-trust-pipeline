@@ -249,6 +249,58 @@ def load_ai():
         os.path.join(AGENT_DIR,   "remediation-report.json"),
     )
 
+def load_security_gate():
+    return find_file(
+        os.path.join(REPORTS_DIR, "security-gate.json"),
+        os.path.join(AGENT_DIR,   "security-gate.json"),
+    )
+
+# ── Score de sécurité ──────────────────────────────────────────────────────────
+
+def calculate_security_score(trivy=None, semgrep=None, zap=None):
+    if trivy is None:   trivy   = load_trivy()
+    if semgrep is None: semgrep = load_semgrep()
+    if zap is None:     zap     = load_zap()
+
+    score = 100
+    penalties = {
+        "cve_critical": 0, "cve_high": 0, "cve_medium": 0, "cve_low": 0,
+        "sast_critical": 0, "sast_high": 0,
+        "dast_high": 0, "dast_medium": 0,
+    }
+
+    for r in trivy.get("Results", []):
+        for v in (r.get("Vulnerabilities") or []):
+            sev = v.get("Severity", "")
+            if sev == "CRITICAL":   score -= 15; penalties["cve_critical"] += 1
+            elif sev == "HIGH":     score -= 8;  penalties["cve_high"] += 1
+            elif sev == "MEDIUM":   score -= 3;  penalties["cve_medium"] += 1
+            elif sev == "LOW":      score -= 1;  penalties["cve_low"] += 1
+
+    for f in semgrep.get("results", []):
+        sev = f.get("extra", {}).get("severity", "").upper()
+        if sev in ("ERROR", "CRITICAL"):    score -= 10; penalties["sast_critical"] += 1
+        elif sev == "WARNING":               score -= 5;  penalties["sast_high"] += 1
+
+    for site in zap.get("site", []):
+        for alert in site.get("alerts", []):
+            rd = alert.get("riskdesc", "")
+            if rd.startswith("High"):        score -= 8;  penalties["dast_high"] += 1
+            elif rd.startswith("Medium"):    score -= 4;  penalties["dast_medium"] += 1
+
+    score = max(0, score)
+    grade = ("A" if score >= 90 else "B" if score >= 75 else
+             "C" if score >= 60 else "D" if score >= 40 else "F")
+
+    return {
+        "score":       score,
+        "grade":       grade,
+        "gate_passed": score >= 90,
+        "threshold":   90,
+        "penalties":   penalties,
+        "timestamp":   datetime.now().isoformat(),
+    }
+
 # ── Sync artifacts depuis Jenkins ─────────────────────────────────────────────
 
 def sync_reports_from_jenkins(build_number):
@@ -273,6 +325,8 @@ def sync_reports_from_jenkins(build_number):
          os.path.join(AGENT_DIR,   "rapport-explicatif.md")),
         (f"/job/{JENKINS_JOB}/{build_number}/artifact/reports/rapport-zerotrust.pdf",
          os.path.join(REPORTS_DIR, "rapport-zerotrust.pdf")),
+        (f"/job/{JENKINS_JOB}/{build_number}/artifact/reports/security-gate.json",
+         os.path.join(REPORTS_DIR, "security-gate.json")),
     ]
 
     synced = []
@@ -332,22 +386,27 @@ def snapshot_build(build_number, build_result, branch, commit, duration_ms, time
     zap_alerts    = [a for s in zap.get("site", []) for a in s.get("alerts", [])]
     zap_high      = len([a for a in zap_alerts if a.get("riskdesc", "").startswith("High")])
 
+    score_data = calculate_security_score(trivy, semgrep, zap)
+
     entry = {
-        "build_number":  build_number,
-        "build_result":  build_result or "UNKNOWN",
-        "branch":        branch,
-        "commit":        commit,
-        "duration_ms":   duration_ms,
-        "timestamp":     datetime.fromtimestamp(timestamp_ms / 1000).isoformat() if timestamp_ms else datetime.now().isoformat(),
-        "cve_total":     cve_total,
-        "cve_critical":  cve_crit,
-        "cve_high":      cve_high,
-        "sast_findings": sast_findings,
-        "zap_alerts":    len(zap_alerts),
-        "zap_high":      zap_high,
-        "ai_provider":   ai.get("provider", "claude"),
-        "ai_calls":      ai.get("total_calls", 0),
-        "fallback_count":ai.get("fallback_count", 0),
+        "build_number":   build_number,
+        "build_result":   build_result or "UNKNOWN",
+        "branch":         branch,
+        "commit":         commit,
+        "duration_ms":    duration_ms,
+        "timestamp":      datetime.fromtimestamp(timestamp_ms / 1000).isoformat() if timestamp_ms else datetime.now().isoformat(),
+        "cve_total":      cve_total,
+        "cve_critical":   cve_crit,
+        "cve_high":       cve_high,
+        "sast_findings":  sast_findings,
+        "zap_alerts":     len(zap_alerts),
+        "zap_high":       zap_high,
+        "ai_provider":    ai.get("provider", "claude"),
+        "ai_calls":       ai.get("total_calls", 0),
+        "fallback_count": ai.get("fallback_count", 0),
+        "security_score": score_data["score"],
+        "security_grade": score_data["grade"],
+        "gate_passed":    score_data["gate_passed"],
     }
 
     history.insert(0, entry)
@@ -587,6 +646,8 @@ def api_status():
     zap_alerts    = [a for s in zap.get("site", []) for a in s.get("alerts", [])]
     zap_high      = [a for a in zap_alerts if a.get("riskdesc", "").startswith("High")]
 
+    score_data = calculate_security_score(trivy, semgrep, zap)
+
     return jsonify({
         "cve_total":      cve_total,
         "cve_critical":   cve_crit,
@@ -597,6 +658,9 @@ def api_status():
         "ai_provider":    ai.get("provider", "claude"),
         "ai_calls":       ai.get("total_calls", 0),
         "fallback_count": ai.get("fallback_count", 0),
+        "security_score": score_data["score"],
+        "security_grade": score_data["grade"],
+        "gate_passed":    score_data["gate_passed"],
         "timestamp":      datetime.now().isoformat(),
         "reports_ready": {
             "trivy":   bool(trivy),
@@ -605,6 +669,14 @@ def api_status():
             "ai":      bool(ai),
         },
     })
+
+
+@app.route("/api/security-score")
+def api_security_score():
+    gate = load_security_gate()
+    if gate:
+        return jsonify(gate)
+    return jsonify(calculate_security_score())
 
 
 @app.route("/api/findings")

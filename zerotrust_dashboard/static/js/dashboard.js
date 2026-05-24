@@ -613,6 +613,22 @@ function showView(view, evt) {
   if (evt?.currentTarget) evt.currentTarget.classList.add('active');
 }
 
+function showDashboard(evt) {
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  if (evt?.currentTarget) evt.currentTarget.classList.add('active');
+  document.getElementById('view-dashboard').style.display  = '';
+  document.getElementById('view-monitoring').style.display = 'none';
+}
+
+function showMonitoring(evt) {
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  if (evt?.currentTarget) evt.currentTarget.classList.add('active');
+  document.getElementById('view-dashboard').style.display  = 'none';
+  document.getElementById('view-monitoring').style.display = '';
+  if (!monitoringInit) { initMonitoringCharts(); monitoringInit = true; }
+  fetchMonitoringData();
+}
+
 function stageClicked(stage) {
   appendLog('–', 'UI', 'i', `Stage: ${stage.name} [${stage.status}] — ${stage.duration}`, 'blue');
 }
@@ -626,4 +642,336 @@ function escHtml(s) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MONITORING VIEW
+// ══════════════════════════════════════════════════════════════════════════════
+
+let monitoringInit  = false;
+let monCharts       = {};
+
+const CHART_COLORS = {
+  critical: '#E8525A',
+  high:     '#F4A93A',
+  medium:   '#5C6EF8',
+  low:      '#3EC97A',
+  purple:   '#9B59B6',
+  grid:     '#2a2d3e',
+  text:     '#8892a4',
+  bg:       '#1e2030',
+};
+
+async function fetchMonitoringData() {
+  try {
+    const [scoreR, historyR, findingsR, statusR] = await Promise.all([
+      fetch('/api/security-score'),
+      fetch('/api/history'),
+      fetch('/api/findings'),
+      fetch('/api/status'),
+    ]);
+    const score    = await scoreR.json();
+    const history  = await historyR.json();
+    const findings = await findingsR.json();
+    const status   = await statusR.json();
+
+    renderSecurityScore(score);
+    renderCveSeverityChart(status);
+    renderFindingsByScanner(findings);
+    renderScoreTrendChart(history);
+    renderPipelineStats(history);
+
+    // Update sidebar badge
+    const sb = document.getElementById('scoreBadge');
+    if (sb && score.score !== undefined) sb.textContent = score.score;
+    // Update dashboard metric card
+    const ms = document.getElementById('m-score');
+    const msub = document.getElementById('m-score-sub');
+    if (ms) ms.textContent = score.score !== undefined ? score.score + '/100' : '–';
+    if (msub) msub.textContent = score.gate_passed ? 'Gate: PASS ✓' : 'Gate: BLOQUÉ ✗';
+  } catch (e) {
+    console.error('fetchMonitoringData:', e);
+  }
+}
+
+function initMonitoringCharts() {
+  // ── Gauge (doughnut semi-circulaire) ─────────────────────────────────────
+  const gCtx = document.getElementById('scoreGaugeChart')?.getContext('2d');
+  if (gCtx) {
+    monCharts.gauge = new Chart(gCtx, {
+      type: 'doughnut',
+      data: {
+        datasets: [{
+          data: [0, 100],
+          backgroundColor: [CHART_COLORS.medium, CHART_COLORS.bg],
+          borderWidth: 0,
+          circumference: 270,
+          rotation: 225,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        cutout: '72%',
+        plugins: { legend: { display: false }, tooltip: { enabled: false } },
+        animation: { duration: 800, easing: 'easeOutQuart' },
+      }
+    });
+  }
+
+  // ── CVE Severity doughnut ────────────────────────────────────────────────
+  const cCtx = document.getElementById('cveSeverityChart')?.getContext('2d');
+  if (cCtx) {
+    monCharts.cve = new Chart(cCtx, {
+      type: 'doughnut',
+      data: {
+        labels: ['Critical', 'High', 'Medium', 'Low'],
+        datasets: [{
+          data: [0, 0, 0, 0],
+          backgroundColor: [CHART_COLORS.critical, CHART_COLORS.high, CHART_COLORS.medium, CHART_COLORS.low],
+          borderWidth: 2,
+          borderColor: '#181926',
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        cutout: '60%',
+        plugins: {
+          legend: { position: 'bottom', labels: { color: CHART_COLORS.text, font: { family: 'Outfit', size: 11 }, padding: 12 } }
+        }
+      }
+    });
+  }
+
+  // ── Findings by scanner (stacked bar) ───────────────────────────────────
+  const fCtx = document.getElementById('findingsByScanner')?.getContext('2d');
+  if (fCtx) {
+    monCharts.findings = new Chart(fCtx, {
+      type: 'bar',
+      data: {
+        labels: ['SAST', 'SCA', 'DAST'],
+        datasets: [
+          { label: 'Critical', data: [0,0,0], backgroundColor: CHART_COLORS.critical, borderRadius: 3 },
+          { label: 'High',     data: [0,0,0], backgroundColor: CHART_COLORS.high,     borderRadius: 3 },
+          { label: 'Medium',   data: [0,0,0], backgroundColor: CHART_COLORS.medium,   borderRadius: 3 },
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: { stacked: true, ticks: { color: CHART_COLORS.text }, grid: { display: false } },
+          y: { stacked: true, ticks: { color: CHART_COLORS.text, precision: 0 }, grid: { color: CHART_COLORS.grid } }
+        },
+        plugins: {
+          legend: { position: 'bottom', labels: { color: CHART_COLORS.text, font: { family: 'Outfit', size: 11 }, padding: 12 } }
+        }
+      }
+    });
+  }
+
+  // ── Score trend (line) ───────────────────────────────────────────────────
+  const tCtx = document.getElementById('scoreTrendChart')?.getContext('2d');
+  if (tCtx) {
+    monCharts.trend = new Chart(tCtx, {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [
+          {
+            label: 'Score sécurité',
+            data: [],
+            borderColor: CHART_COLORS.medium,
+            backgroundColor: 'rgba(92,110,248,0.12)',
+            fill: true, tension: 0.35,
+            pointBackgroundColor: CHART_COLORS.medium,
+            pointRadius: 5, pointHoverRadius: 7,
+            yAxisID: 'y',
+          },
+          {
+            label: 'CVE total',
+            data: [],
+            borderColor: CHART_COLORS.critical,
+            backgroundColor: 'transparent',
+            fill: false, tension: 0.35,
+            borderDash: [4, 3],
+            pointBackgroundColor: CHART_COLORS.critical,
+            pointRadius: 4, pointHoverRadius: 6,
+            yAxisID: 'y2',
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        scales: {
+          x:  { ticks: { color: CHART_COLORS.text }, grid: { color: CHART_COLORS.grid } },
+          y:  {
+            min: 0, max: 100,
+            ticks: { color: CHART_COLORS.text, precision: 0 },
+            grid: { color: CHART_COLORS.grid },
+            title: { display: true, text: 'Score /100', color: CHART_COLORS.medium },
+          },
+          y2: {
+            position: 'right',
+            min: 0,
+            ticks: { color: CHART_COLORS.critical, precision: 0 },
+            grid: { display: false },
+            title: { display: true, text: 'CVE count', color: CHART_COLORS.critical },
+          },
+        },
+        plugins: {
+          legend: { position: 'bottom', labels: { color: CHART_COLORS.text, font: { family: 'Outfit', size: 11 }, padding: 16 } },
+          annotation: {
+            annotations: {
+              threshold: {
+                type: 'line', yMin: 90, yMax: 90,
+                borderColor: '#3EC97A', borderWidth: 1.5, borderDash: [6, 4],
+              }
+            }
+          }
+        }
+      }
+    });
+  }
+}
+
+function renderSecurityScore(d) {
+  const score      = d.score ?? 0;
+  const grade      = d.grade ?? '–';
+  const gate       = d.gate_passed ?? false;
+  const penalties  = d.penalties ?? {};
+
+  // Gauge color
+  const color = score >= 90 ? CHART_COLORS.low :
+                score >= 75 ? CHART_COLORS.medium :
+                score >= 60 ? CHART_COLORS.high : CHART_COLORS.critical;
+
+  if (monCharts.gauge) {
+    monCharts.gauge.data.datasets[0].data = [score, 100 - score];
+    monCharts.gauge.data.datasets[0].backgroundColor = [color, CHART_COLORS.bg];
+    monCharts.gauge.update();
+  }
+
+  const sv = document.getElementById('scoreValue');
+  const sg = document.getElementById('scoreGrade');
+  if (sv) { sv.textContent = score; sv.style.color = color; }
+  if (sg) { sg.textContent = grade; sg.style.color = color; }
+
+  // Gate
+  const badge   = document.getElementById('gateBadge');
+  const icon    = document.getElementById('gateIcon');
+  const gateMsg = document.getElementById('gateMsg');
+  if (badge) {
+    badge.textContent = gate ? 'PASS' : 'BLOQUÉ';
+    badge.className   = gate ? 'gate-badge pass' : 'gate-badge fail';
+  }
+  if (icon)    icon.className    = gate ? 'ti ti-shield-check gate-icon pass' : 'ti ti-shield-x gate-icon fail';
+  if (gateMsg) gateMsg.textContent = gate
+    ? `✓ Déploiement autorisé — score ${score}/100 ≥ 90`
+    : `✗ Déploiement bloqué — score ${score}/100 < 90`;
+
+  // Breakdown table
+  function setPen(id, n, mult) {
+    const nbEl = document.getElementById(id);
+    const totEl = document.getElementById(id + '-t');
+    if (nbEl)  nbEl.textContent  = n;
+    if (totEl) totEl.textContent = n > 0 ? `-${n * mult}` : '0';
+  }
+  setPen('pen-cve-crit',  penalties.cve_critical  ?? 0, 15);
+  setPen('pen-cve-high',  penalties.cve_high       ?? 0, 8);
+  setPen('pen-cve-med',   penalties.cve_medium     ?? 0, 3);
+  setPen('pen-sast-crit', penalties.sast_critical  ?? 0, 10);
+  setPen('pen-sast-high', penalties.sast_high      ?? 0, 5);
+  setPen('pen-dast-high', penalties.dast_high      ?? 0, 8);
+  setPen('pen-dast-med',  penalties.dast_medium    ?? 0, 4);
+}
+
+function renderCveSeverityChart(status) {
+  if (!monCharts.cve) return;
+  const crit = status.cve_critical ?? 0;
+  const high = status.cve_high     ?? 0;
+  const tot  = status.cve_total    ?? 0;
+  const med  = Math.max(0, tot - crit - high);
+  monCharts.cve.data.datasets[0].data = [crit, high, med, 0];
+  monCharts.cve.update();
+}
+
+function renderFindingsByScanner(findings) {
+  if (!monCharts.findings) return;
+  const counts = {
+    SAST: { critical:0, high:0, medium:0 },
+    SCA:  { critical:0, high:0, medium:0 },
+    DAST: { critical:0, high:0, medium:0 },
+  };
+  findings.forEach(f => {
+    const s = counts[f.source];
+    if (!s) return;
+    if      (f.severity === 'critical')                      s.critical++;
+    else if (f.severity === 'high')                          s.high++;
+    else if (f.severity === 'medium' || f.severity === 'info') s.medium++;
+  });
+  monCharts.findings.data.datasets[0].data = [counts.SAST.critical, counts.SCA.critical, counts.DAST.critical];
+  monCharts.findings.data.datasets[1].data = [counts.SAST.high,     counts.SCA.high,     counts.DAST.high];
+  monCharts.findings.data.datasets[2].data = [counts.SAST.medium,   counts.SCA.medium,   counts.DAST.medium];
+  monCharts.findings.update();
+}
+
+function renderScoreTrendChart(history) {
+  if (!monCharts.trend || !history?.length) return;
+  const sorted = [...history].reverse().slice(-12);
+  monCharts.trend.data.labels = sorted.map(b => `#${b.build_number}`);
+  monCharts.trend.data.datasets[0].data = sorted.map(b => {
+    if (b.security_score !== undefined) return b.security_score;
+    let s = 100;
+    s -= (b.cve_critical ?? 0) * 15;
+    s -= (b.cve_high     ?? 0) * 8;
+    s -= (b.sast_findings ?? 0) * 5;
+    s -= (b.zap_high     ?? 0) * 8;
+    return Math.max(0, s);
+  });
+  monCharts.trend.data.datasets[1].data = sorted.map(b => b.cve_total ?? 0);
+  monCharts.trend.update();
+}
+
+function renderPipelineStats(history) {
+  const el = document.getElementById('pipelineStats');
+  if (!el || !history?.length) return;
+  const total     = history.length;
+  const successes = history.filter(b => b.build_result === 'SUCCESS').length;
+  const avgMs     = history.reduce((s, b) => s + (b.duration_ms ?? 0), 0) / total;
+  const lastScore = history[0]?.security_score;
+  const avgScore  = Math.round(
+    history.reduce((s, b) => s + (b.security_score ?? 0), 0) / total
+  );
+  const passCount = history.filter(b => b.gate_passed).length;
+
+  el.innerHTML = `
+    <div class="stat-item">
+      <div class="stat-value green">${successes}/${total}</div>
+      <div class="stat-label">Builds réussis</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-value blue">${Math.round(avgMs/60000)}m${String(Math.round((avgMs%60000)/1000)).padStart(2,'0')}s</div>
+      <div class="stat-label">Durée moyenne</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-value amber">${Math.round((successes/total)*100)}%</div>
+      <div class="stat-label">Taux de succès</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-value" style="color:#5C6EF8">${lastScore ?? '–'}/100</div>
+      <div class="stat-label">Score dernier build</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-value" style="color:#5C6EF8">${avgScore}/100</div>
+      <div class="stat-label">Score moyen</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-value ${passCount === total ? 'green' : 'amber'}">${passCount}/${total}</div>
+      <div class="stat-label">Gates réussies</div>
+    </div>
+  `;
 }

@@ -25,26 +25,26 @@ def generer_rapport_pedagogique(
     )
     nb_sast = len(semgrep.get('results', []))
  
-    prompt = f"""Tu es un mentor bienveillant qui explique la sécurité à des étudiantes.
- 
+    prompt = f"""Tu es un ingénieur DevSecOps senior produisant un rapport d'analyse de sécurité destiné à une équipe technique.
+
 Résultats des scans de sécurité :
-- Trivy a trouvé {nb_cve} vulnérabilités dans les dépendances Python
-- Semgrep a trouvé {nb_sast} problèmes dans le code source
- 
+- Trivy (SCA) : {nb_cve} CVE détectées dans les dépendances Python
+- Semgrep (SAST) : {nb_sast} findings dans le code source
+
 Données Trivy (extrait) :
 {json.dumps(trivy.get('Results', [])[:2], ensure_ascii=False)[:1500]}
- 
+
 Données Semgrep (extrait) :
 {json.dumps(semgrep.get('results', [])[:3], ensure_ascii=False)[:1000]}
- 
-Génère un rapport Markdown pédagogique avec :
-1. Résumé en 3 lignes simples (pour quelqu'un de non-technique)
-2. Les 3 problèmes les plus importants, expliqués simplement
-3. Les étapes concrètes à faire (commandes exactes)
-4. Ce que vous avez bien fait (points positifs)
-5. Ce que vous allez apprendre en corrigeant cela
- 
-Sois encourageant, pédagogique et précis. Utilise des emojis."""
+
+Génère un rapport Markdown technique structuré avec :
+1. **Executive Summary** — synthèse en 3 lignes : surface d'attaque, criticité globale, statut de conformité Zero Trust
+2. **Findings critiques** — pour chaque finding HIGH/CRITICAL : CVE ID, vecteur CVSS, composant affecté, impact opérationnel, exploitabilité
+3. **Plan de remédiation** — actions priorisées par sévérité avec commandes exactes (`pip install`, patches, refactoring), délais recommandés (immédiat / 48h / sprint prochain)
+4. **Analyse de la posture de sécurité** — forces identifiées, dette technique résiduelle, couverture des contrôles Zero Trust
+5. **Métriques** — MTTR estimé, score de risque résiduel, recommandations pour le prochain cycle CI/CD
+
+Ton style : direct, factuel, sans formulation pédagogique. Utilise la terminologie OWASP, CVSSv3, NIST. Pas d'emojis."""
  
     return appeler_ollama(prompt)
  
