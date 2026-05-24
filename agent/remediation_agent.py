@@ -111,7 +111,7 @@ def generer_summary_md(analyse: dict) -> str:
 
 
 if __name__ == '__main__':
-    afficher_banniere('Agent IA Remédiation — Ollama Zero Trust', 'blue')
+    afficher_banniere('Agent IA Remédiation — Dual AI Engine', 'blue')
 
     if not verifier_ollama():
         console.print("[red]Lancer 'ollama serve' dans un autre terminal puis réessayer.[/red]")

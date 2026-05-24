@@ -72,7 +72,7 @@ Réponds UNIQUEMENT en JSON valide."""
 
 
 if __name__ == '__main__':
-    afficher_banniere('Agent Anti-Tampering — Ollama Zero Trust', 'red')
+    afficher_banniere('Agent Anti-Tampering — Dual AI Engine', 'red')
 
     # Vérifier qu'Ollama tourne
     if not verifier_ollama():
