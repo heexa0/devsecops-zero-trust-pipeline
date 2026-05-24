@@ -1,17 +1,17 @@
 # devsecops-zero-trust-pipeline/docker-compose.yml
 version: '3.9'
- 
+
 networks:
   zerotrust-net:
     driver: bridge
   ai-internal:
     driver: bridge
     internal: true   # Ollama isolé — pas d'accès internet direct
- 
+
 volumes:
   jenkins_home:
   ollama_models:
- 
+
 services:
 # ─── Jenkins ────────────────────────────────────────
   jenkins:
@@ -23,6 +23,7 @@ services:
     ports:
       - '9090:8080'
       - '50000:50000'
+      - '5002:5002'
     environment:
       - JAVA_OPTS=-Djenkins.install.runSetupWizard=false
       - CASC_JENKINS_CONFIG=/var/jenkins_home/casc/
@@ -41,7 +42,7 @@ services:
       - ai-internal
     depends_on:
       - ollama
- 
+
   # ─── Ollama ─────────────────────────────────────────
   ollama:
     image: ollama/ollama:latest
@@ -54,6 +55,10 @@ services:
     networks:
       - ai-internal   # Réseau interne uniquement
       - zerotrust-net
-      
     environment:
       - OLLAMA_HOST=0.0.0.0
+
+  # ─── Production App (gérée par Jenkins au deploy) ───
+  # Ce service documente le conteneur prod — Jenkins le lance via docker.sock
+  # Port 5002 est réservé pour l'app déployée
+  # (Le conteneur réel "zerotrust-prod" est lancé dynamiquement par le pipeline)

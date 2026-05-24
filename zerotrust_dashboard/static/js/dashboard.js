@@ -1,150 +1,303 @@
 /* ═══ ZeroTrust CI Dashboard — dashboard.js ═══ */
 
-// ─── Pipeline stages (synced avec votre Jenkinsfile) ─────────────────────────
-const STAGES = [
-  { id: 'prep',   name: 'Préparation', icon: 'ti-settings',      sub: 'Stage 0' },
-  { id: 'sast',   name: 'SAST',        icon: 'ti-code',           sub: 'Semgrep' },
-  { id: 'sca',    name: 'SCA',         icon: 'ti-package',        sub: 'Trivy' },
-  { id: 'ai3a',   name: 'Anti-Tamper', icon: 'ti-shield-lock',    sub: 'Stage 3a' },
-  { id: 'ai3b',   name: 'Remédiation', icon: 'ti-robot',          sub: 'Stage 3b' },
-  { id: 'ai3c',   name: 'Rapport IA',  icon: 'ti-file-analytics', sub: 'Stage 3c' },
-  { id: 'docker', name: 'Docker Build',icon: 'ti-box',            sub: 'Stage 4' },
-  { id: 'scan',   name: 'Image Scan',  icon: 'ti-shield',         sub: 'Stage 5' },
-  { id: 'dast',   name: 'DAST',        icon: 'ti-antenna',        sub: 'ZAP' },
-  { id: 'cosign', name: 'Cosign',      icon: 'ti-certificate',    sub: 'Stage 6' },
-  { id: 'pdf',    name: 'Rapport PDF', icon: 'ti-file-type-pdf',  sub: 'Stage 7' },
-];
+const REFRESH_INTERVAL = 8000;
+const LOG_MAX_LINES    = 400;
 
-// ─── State ────────────────────────────────────────────────────────────────────
-let allFindings  = [];
-let currentFilter = 'all';
-let fallbackActive = false;
-let buildStartTime = Date.now();
-let timerInterval;
-let logQueue = [];
-let isLogging = false;
+let allFindings       = [];
+let currentFilter     = 'all';
+let fallbackActive    = false;
+let timerInterval     = null;
+let jenkinsAvailable  = false;
+let lastLogText       = "";
+let lastBuildNumber   = null;
+let lastBuildFinished = false;
+let syncInProgress    = false;
 
-// ─── Demo mode : status simulé quand pas de vrai Jenkins ─────────────────────
-const DEMO_STAGE_STATUS = {
-  prep: 'done', sast: 'done', sca: 'done',
-  ai3a: 'done', ai3b: 'running', ai3c: 'waiting',
-  docker: 'waiting', scan: 'waiting', dast: 'waiting',
-  cosign: 'waiting', pdf: 'waiting',
-};
-
-// ─── Init ─────────────────────────────────────────────────────────────────────
+// ── Init ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  buildPipelineFlow();
-  startTimer();
+  appendLog('–', 'SYS', 'i', 'Dashboard initialisé — connexion à Jenkins…', 'blue');
+  appendCursor();
   refreshAll();
-  setInterval(refreshAll, 30000); // auto-refresh toutes les 30s
-  bootConsole();
+  fetchHistory();
+  setInterval(refreshAll, REFRESH_INTERVAL);
 });
 
-// ─── Build pipeline flow ──────────────────────────────────────────────────────
-function buildPipelineFlow(statusMap) {
+// ── Refresh principal ─────────────────────────────────────────────────────────
+async function refreshAll() {
+  document.getElementById('lastRefresh').textContent =
+    'MàJ: ' + new Date().toLocaleTimeString('fr-FR');
+
+  await Promise.all([
+    fetchJenkinsStatus(),
+    fetchSecurityMetrics(),
+    fetchFindings(),
+    fetchConsoleLogs(),
+  ]);
+}
+
+// ── Jenkins Status ────────────────────────────────────────────────────────────
+async function fetchJenkinsStatus() {
+  try {
+    const r = await fetch('/api/jenkins/status');
+    const d = await r.json();
+
+    if (!d.jenkins_available) {
+      setJenkinsUnavailable(d.error);
+      return;
+    }
+
+    // Nouveau build détecté → reset console + sync rapports + reset métriques
+    if (lastBuildNumber !== null && d.build_number !== lastBuildNumber) {
+      lastLogText       = '';
+      lastBuildFinished = false;
+      document.getElementById('consoleBody').innerHTML = '';
+      appendLog('–', 'SYS', 's', `✓ Nouveau build détecté : #${d.build_number}`, 'green');
+      resetMetrics();
+    }
+
+    // Build vient de se terminer → sync automatique des rapports + refresh history
+    if (d.build_finished && !lastBuildFinished && d.build_number === lastBuildNumber) {
+      appendLog('–', 'SYS', 'i', `Build #${d.build_number} terminé — synchronisation des rapports…`, 'blue');
+      autoSyncReports(d.build_number);
+      setTimeout(fetchHistory, 2000);
+    }
+
+    // Premier chargement avec build déjà terminé → sync immédiate si rapports absents
+    if (lastBuildNumber === null && d.build_finished) {
+      autoSyncReports(d.build_number);
+    }
+
+    lastBuildNumber   = d.build_number;
+    lastBuildFinished = d.build_finished;
+    jenkinsAvailable  = true;
+
+    document.getElementById('buildNum').textContent     = `Build #${d.build_number}`;
+    document.getElementById('buildTitle').textContent   = d.branch || '–';
+    document.getElementById('buildBranch').textContent  = d.branch || '–';
+    document.getElementById('commitHash').textContent   = d.commit || '–';
+    if (d.timestamp) {
+      document.getElementById('buildTime').textContent =
+        new Date(d.timestamp).toLocaleTimeString('fr-FR');
+    }
+
+    applyBuildStatus(d.build_status);
+    startTimerFrom(d.elapsed_sec ?? 0, d.build_status === 'running');
+
+    if (d.stages && d.stages.length > 0) {
+      renderPipelineFlow(d.stages, d.done_count, d.stages_count);
+    }
+
+    const liveEl = document.getElementById('liveStatus');
+    liveEl.className = 'chip ok';
+    liveEl.innerHTML = '<span class="dot ok"></span>Jenkins connecté';
+
+  } catch (e) {
+    console.error('fetchJenkinsStatus:', e);
+    setJenkinsUnavailable('Erreur réseau');
+  }
+}
+
+// ── Sync automatique des rapports ─────────────────────────────────────────────
+async function autoSyncReports(buildNumber) {
+  if (syncInProgress) return;
+  syncInProgress = true;
+  try {
+    const r = await fetch('/api/sync-reports');
+    const d = await r.json();
+    if (d.synced && d.synced.length > 0) {
+      appendLog('–', 'SYS', 's', `✓ ${d.synced.length} rapport(s) synchronisé(s) : ${d.synced.join(', ')}`, 'green');
+      await Promise.all([fetchSecurityMetrics(), fetchFindings()]);
+    } else {
+      appendLog('–', 'SYS', 'i', `Sync build #${buildNumber} — aucun rapport disponible encore`, 'blue');
+    }
+    if (d.errors && d.errors.length > 0) {
+      appendLog('–', 'SYS', 'i', `Rapports non disponibles : ${d.errors.join(', ')}`, 'amber');
+    }
+  } catch (e) {
+    appendLog('–', 'SYS', 'e', '✗ Erreur de synchronisation des rapports', 'red');
+  } finally {
+    syncInProgress = false;
+    appendCursor();
+  }
+}
+
+function setJenkinsUnavailable(msg) {
+  jenkinsAvailable = false;
+  const liveEl = document.getElementById('liveStatus');
+  liveEl.className = 'chip amber';
+  liveEl.innerHTML = '<span class="dot warn"></span>Jenkins hors ligne';
+  document.getElementById('buildStatus').className = 'chip amber';
+  document.getElementById('buildStatus').innerHTML = '<span class="dot warn"></span>Non connecté';
+  if (msg) console.warn('[Jenkins]', msg);
+}
+
+function applyBuildStatus(status) {
+  const el  = document.getElementById('buildStatus');
+  const map = {
+    running:  { cls: 'chip blue',  dot: '',     label: 'En cours…' },
+    success:  { cls: 'chip ok',    dot: 'ok',   label: 'Succès ✓' },
+    failure:  { cls: 'chip red',   dot: 'warn', label: 'Échec ✗' },
+    aborted:  { cls: 'chip amber', dot: 'warn', label: 'Annulé' },
+    unstable: { cls: 'chip amber', dot: 'warn', label: 'Instable' },
+  };
+  const s = map[status] || map.running;
+  el.className = s.cls;
+  el.innerHTML = s.dot ? `<span class="dot ${s.dot}"></span>${s.label}` : s.label;
+}
+
+// ── Pipeline Flow ─────────────────────────────────────────────────────────────
+const STAGE_ICONS = {
+  'préparation': 'ti-settings', 'preparation': 'ti-settings', 'setup': 'ti-settings',
+  'checkout':    'ti-git-branch',
+  'sast':        'ti-code',     'semgrep': 'ti-code',
+  'sca':         'ti-package',  'trivy': 'ti-package',
+  'anti-tamper': 'ti-shield-lock', 'anti tamper': 'ti-shield-lock', 'tampering': 'ti-shield-lock',
+  'remédia':     'ti-robot',    'remediation': 'ti-robot',
+  'agents':      'ti-robot',    'rapport ia': 'ti-file-analytics', 'explicatif': 'ti-file-analytics',
+  'docker':      'ti-box',      'build': 'ti-box',
+  'scan image':  'ti-shield',   'image scan': 'ti-shield',
+  'dast':        'ti-antenna',  'zap': 'ti-antenna',
+  'cosign':      'ti-certificate', 'signature': 'ti-certificate',
+  'rapport pdf': 'ti-file-type-pdf', 'pdf': 'ti-file-type-pdf',
+  'security':    'ti-shield-check', 'guard': 'ti-shield-check',
+  'deploy':      'ti-rocket',   'production': 'ti-rocket', 'déploiement': 'ti-rocket',
+  'staging':     'ti-server',
+  'étape':       'ti-circle-dot',
+};
+
+function iconForStage(name) {
+  const key = (name || '').toLowerCase();
+  for (const [k, v] of Object.entries(STAGE_ICONS)) {
+    if (key.includes(k)) return v;
+  }
+  return 'ti-circle-dot';
+}
+
+// ── FIX : truncate robuste — ne retourne jamais "Stage" si un vrai nom existe ─
+function truncateStageName(name) {
+  // Guard : nom null/undefined/vide
+  if (!name || typeof name !== 'string' || !name.trim()) return 'Étape ?';
+
+  const raw = name.trim();
+
+  // Retire le préfixe numérique type "0. ", "3a. ", "1b. " etc.
+  const cleaned = raw.replace(/^\d+[a-z]?\.\s*/i, '').trim();
+
+  // Si après nettoyage c'est vide, retourne le nom brut tronqué
+  const display = cleaned || raw;
+
+  // Tronque à 14 caractères pour tenir dans la boîte 96px
+  return display.length > 14 ? display.slice(0, 13) + '…' : display;
+}
+
+function renderPipelineFlow(stages, doneCount, total) {
   const track = document.getElementById('flowTrack');
   track.innerHTML = '';
-  const sm = statusMap || DEMO_STAGE_STATUS;
 
-  STAGES.forEach((s, i) => {
-    const st = sm[s.id] || 'waiting';
-    const el = document.createElement('div');
-    el.className = `stage ${st}`;
-    el.id = `stage-${s.id}`;
-    el.title = `${s.name} [${st}]`;
-    el.onclick = () => stageClicked(s);
+  stages.forEach((s, i) => {
+    const icon        = iconForStage(s.name);
+    const displayName = truncateStageName(s.name);
+    const el          = document.createElement('div');
+    el.className      = `stage ${s.status}`;
+    // Nom complet visible au survol (tooltip natif)
+    el.title          = `${s.name} [${s.status}] — ${s.duration}`;
+    el.onclick        = () => stageClicked(s);
     el.innerHTML = `
       <div class="stage-node">
-        ${st === 'running' ? '<div class="pulse-ring"></div><div class="scan"></div>' : ''}
-        <i class="ti ${s.icon} stage-icon"></i>
-        <div class="stage-name">${s.name}</div>
+        ${s.status === 'running' ? '<div class="pulse-ring"></div><div class="scan"></div>' : ''}
+        <i class="ti ${icon} stage-icon"></i>
+        <div class="stage-name">${escHtml(displayName)}</div>
       </div>
-      <div class="stage-dur" id="dur-${s.id}">–</div>
+      <div class="stage-dur">${s.duration}</div>
     `;
     track.appendChild(el);
 
-    if (i < STAGES.length - 1) {
-      const c = document.createElement('div');
-      c.className = 'connector';
-      const lc = st === 'done' ? 'done' : st === 'running' ? 'running' : 'waiting';
-      c.innerHTML = `<div class="conn-line ${lc}"></div>`;
-      track.appendChild(c);
+    if (i < stages.length - 1) {
+      const conn = document.createElement('div');
+      conn.className = 'connector';
+      const lc = s.status === 'done' ? 'done' : s.status === 'running' ? 'running' : 'waiting';
+      conn.innerHTML = `<div class="conn-line ${lc}"></div>`;
+      track.appendChild(conn);
     }
   });
 
-  // Progress bar
-  const doneCount = Object.values(sm).filter(v => v === 'done').length;
-  const pct = Math.round((doneCount / STAGES.length) * 100);
+  const pct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
   document.getElementById('progressFill').style.width = pct + '%';
 }
 
-// ─── Timer ────────────────────────────────────────────────────────────────────
-function startTimer() {
-  buildStartTime = Date.now();
+// ── Timer ─────────────────────────────────────────────────────────────────────
+function startTimerFrom(elapsedSec, running) {
   clearInterval(timerInterval);
-  timerInterval = setInterval(() => {
-    const sec = Math.floor((Date.now() - buildStartTime) / 1000);
-    const m = String(Math.floor(sec / 60)).padStart(2, '0');
-    const s = String(sec % 60).padStart(2, '0');
+  const base = Date.now() - elapsedSec * 1000;
+  const tick = () => {
+    const sec = Math.floor((Date.now() - base) / 1000);
+    const m   = String(Math.floor(sec / 60)).padStart(2, '0');
+    const s   = String(sec % 60).padStart(2, '0');
     document.getElementById('timer').textContent = `${m}:${s}`;
-  }, 1000);
+  };
+  tick();
+  if (running) timerInterval = setInterval(tick, 1000);
 }
 
-// ─── Refresh all data from API ────────────────────────────────────────────────
-async function refreshAll() {
-  document.getElementById('lastRefresh').textContent =
-    'Refresh: ' + new Date().toLocaleTimeString('fr-FR');
-  await Promise.all([fetchStatus(), fetchFindings()]);
-}
-
-async function fetchStatus() {
+// ── Métriques sécurité ────────────────────────────────────────────────────────
+async function fetchSecurityMetrics() {
   try {
     const r = await fetch('/api/status');
-    if (!r.ok) throw new Error('no server');
     const d = await r.json();
-    applyStatus(d);
-  } catch {
-    applyDemoStatus();
+
+    document.getElementById('m-cve').textContent      = d.cve_total      ?? '–';
+    document.getElementById('m-cve-sub').textContent  = `${d.cve_critical ?? '–'} critical · ${d.cve_high ?? '–'} high`;
+    document.getElementById('m-sast').textContent     = d.sast_findings   ?? '–';
+    document.getElementById('m-zap').textContent      = d.zap_alerts      ?? '–';
+    document.getElementById('m-zap-sub').textContent  = `${d.zap_high     ?? '–'} high severity`;
+
+    // Ne jamais écraser l'état UI AI si le fallback simulé est actif
+    if (!fallbackActive) {
+      const provider = (d.ai_provider || 'claude').toUpperCase();
+      document.getElementById('m-ai').textContent          = provider;
+      document.getElementById('m-ai-provider').textContent = provider;
+      document.getElementById('aiCalls').textContent       = d.ai_calls ?? '–';
+      document.getElementById('fallbackCount').textContent = d.fallback_count ?? 0;
+
+      const claudeChip = document.getElementById('claudeChip');
+      const ollamaChip = document.getElementById('ollamaChip');
+      if (claudeChip && claudeChip.className !== 'provider-status ok') {
+        claudeChip.className  = 'provider-status ok';
+        claudeChip.textContent = 'Actif';
+      }
+      if (ollamaChip && ollamaChip.className !== 'provider-status standby') {
+        ollamaChip.className  = 'provider-status standby';
+        ollamaChip.textContent = 'Standby';
+      }
+    }
+
+    document.getElementById('m-ai-sub').textContent = `${d.ai_calls ?? '–'} calls · ${d.fallback_count ?? 0} fallbacks`;
+
+    if (d.reports_ready) {
+      const ready = Object.values(d.reports_ready).filter(Boolean).length;
+      const total = Object.keys(d.reports_ready).length;
+      const badge = document.getElementById('stagesBadge');
+      if (badge) badge.textContent = ready === total ? '✓' : `${ready}/${total}`;
+    }
+  } catch (e) {
+    console.error('fetchSecurityMetrics:', e);
   }
 }
 
-function applyStatus(d) {
-  document.getElementById('m-cve').textContent      = d.cve_total;
-  document.getElementById('m-cve-sub').textContent  = `${d.cve_critical} critical · ${d.cve_high} high`;
-  document.getElementById('m-sast').textContent     = d.sast_findings;
-  document.getElementById('m-zap').textContent      = d.zap_alerts;
-  document.getElementById('m-zap-sub').textContent  = `${d.zap_high} high severity`;
-  document.getElementById('m-ai').textContent       = d.ai_provider || 'Claude';
-  document.getElementById('aiCalls').textContent    = d.ai_calls || '–';
-  document.getElementById('fallbackCount').textContent = d.fallback_count || '0';
-  document.getElementById('buildTime').textContent  = new Date(d.timestamp).toLocaleTimeString('fr-FR');
-}
-
-function applyDemoStatus() {
-  document.getElementById('m-cve').textContent      = '14';
-  document.getElementById('m-cve-sub').textContent  = '3 critical · 6 high';
-  document.getElementById('m-sast').textContent     = '3';
-  document.getElementById('m-sast-sub').textContent = 'Semgrep analysis';
-  document.getElementById('m-zap').textContent      = '7';
-  document.getElementById('m-zap-sub').textContent  = '2 high severity';
-  document.getElementById('m-ai').textContent       = 'Claude';
-  document.getElementById('aiCalls').textContent    = '12';
-  document.getElementById('fallbackCount').textContent = '0';
-  document.getElementById('buildTime').textContent  = new Date().toLocaleTimeString('fr-FR');
-}
-
-// ─── Findings ─────────────────────────────────────────────────────────────────
+// ── Findings ──────────────────────────────────────────────────────────────────
 async function fetchFindings() {
   try {
     const r = await fetch('/api/findings');
-    if (!r.ok) throw new Error('no server');
     allFindings = await r.json();
-  } catch {
-    allFindings = DEMO_FINDINGS;
+  } catch (e) {
+    allFindings = [];
   }
-  document.getElementById('findingsBadge').textContent = allFindings.length;
-  document.getElementById('tabAll').textContent = `(${allFindings.length})`;
+
+  const badge  = document.getElementById('findingsBadge');
+  const tabAll = document.getElementById('tabAll');
+  if (badge)  badge.textContent  = allFindings.length || '0';
+  if (tabAll) tabAll.textContent = `(${allFindings.length})`;
+
   renderFindings(currentFilter);
 }
 
@@ -161,27 +314,38 @@ function renderFindings(filter) {
   const list = document.getElementById('findingsList');
   let data = allFindings;
 
-  if (filter === 'critical') data = data.filter(f => f.severity === 'critical');
-  else if (filter === 'high')  data = data.filter(f => f.severity === 'high');
+  if (filter === 'critical')                       data = data.filter(f => f.severity === 'critical');
+  else if (filter === 'high')                      data = data.filter(f => f.severity === 'high');
   else if (['SAST','SCA','DAST'].includes(filter)) data = data.filter(f => f.source === filter);
 
   if (!data.length) {
-    list.innerHTML = '<div class="empty-state"><i class="ti ti-shield-check"></i><br>Aucun finding pour ce filtre</div>';
+    const msg = allFindings.length === 0
+      ? (jenkinsAvailable
+          ? 'Aucun rapport disponible — cliquez sur Refresh ou attendez la fin du build'
+          : 'Jenkins hors ligne — rapports indisponibles')
+      : 'Aucun finding pour ce filtre ✓';
+    list.innerHTML = `<div class="empty-state"><i class="ti ti-shield-check"></i><br>${msg}</div>`;
     return;
   }
 
+  const iconMap = {
+    critical: 'ti-alert-triangle',
+    high:     'ti-alert-circle',
+    medium:   'ti-info-circle',
+    info:     'ti-check'
+  };
   list.innerHTML = '';
+
   data.forEach(f => {
     const sev = f.severity || 'info';
-    const iconMap = { critical: 'ti-alert-triangle', high: 'ti-alert-circle', medium: 'ti-info-circle', info: 'ti-check' };
-    const el = document.createElement('div');
-    el.className = 'finding flash';
+    const el  = document.createElement('div');
+    el.className = 'finding';
     el.innerHTML = `
       <div class="finding-icon ${sev}"><i class="ti ${iconMap[sev] || 'ti-circle'}"></i></div>
       <div style="flex:1;min-width:0">
         <div class="finding-title">${escHtml(f.title)}</div>
         <div class="finding-meta">${escHtml(f.file || '')}</div>
-        ${f.detail ? `<div class="finding-meta" style="margin-top:2px;color:var(--text3)">${escHtml(f.detail.slice(0,100))}${f.detail.length>100?'…':''}</div>` : ''}
+        ${f.detail ? `<div class="finding-detail">${escHtml(f.detail.slice(0,130))}${f.detail.length > 130 ? '…' : ''}</div>` : ''}
         <span class="finding-badge ${sev}">${f.source} · ${sev}</span>
       </div>
     `;
@@ -189,144 +353,277 @@ function renderFindings(filter) {
   });
 }
 
-// ─── Console ──────────────────────────────────────────────────────────────────
-const BOOT_LOGS = [
-  { ts:'00:01', stage:'PREP', cls:'i', text:'=== ZeroTrust CI/CD Pipeline v2.0 ===', c:'bright' },
-  { ts:'00:02', stage:'PREP', cls:'i', text:'Jenkins build agent started', c:'' },
-  { ts:'00:05', stage:'PREP', cls:'i', text:'Installing tools: semgrep, trivy, docker...', c:'' },
-  { ts:'00:18', stage:'PREP', cls:'s', text:'✓ Python venv ready: /opt/zerotrust-venv', c:'green' },
-  { ts:'00:20', stage:'PREP', cls:'s', text:'✓ Ollama client check: mistral:7b available', c:'green' },
-  { ts:'00:22', stage:'SAST', cls:'s', text:'Semgrep scan started on test-app/', c:'' },
-  { ts:'00:45', stage:'SAST', cls:'a', text:'⚠ SQLi found: app.py:42 — formatted-sql-query', c:'amber' },
-  { ts:'00:46', stage:'SAST', cls:'a', text:'⚠ OS Injection: app.py:67 — shell=True', c:'amber' },
-  { ts:'00:47', stage:'SAST', cls:'s', text:'Semgrep: 3 findings | Rapport: reports/semgrep-results.json', c:'green' },
-  { ts:'01:10', stage:'SCA',  cls:'s', text:'Trivy FS scan: ./test-app', c:'' },
-  { ts:'01:42', stage:'SCA',  cls:'e', text:'CVE-2023-44323 Pillow 9.0.0 — CVSS 8.8 CRITICAL', c:'red' },
-  { ts:'01:43', stage:'SCA',  cls:'e', text:'CVE-2023-2650 cryptography 3.3.1 — HIGH', c:'red' },
-  { ts:'01:44', stage:'SCA',  cls:'e', text:'CVE-2021-33503 urllib3 1.26.4 — HIGH', c:'red' },
-  { ts:'01:45', stage:'SCA',  cls:'s', text:'Trivy: 14 CVE total | 3 CRITICAL | 6 HIGH', c:'amber' },
-  { ts:'02:01', stage:'AI',   cls:'p', text:'→ Calling Claude API (claude-sonnet-4-5)...', c:'purple' },
-  { ts:'02:02', stage:'AI',   cls:'p', text:'→ Provider: CLAUDE [PRIMARY — qualité supérieure]', c:'purple' },
-  { ts:'02:03', stage:'AI',   cls:'p', text:'→ Analyzing pipeline: jenkinsfile integrity check...', c:'' },
-  { ts:'02:18', stage:'AI',   cls:'s', text:'✓ Anti-tamper: aucune modification malveillante détectée', c:'green' },
-  { ts:'02:20', stage:'AI',   cls:'p', text:'→ Remédiation CVE: génération des patches...', c:'purple' },
-  { ts:'02:35', stage:'AI',   cls:'s', text:'✓ Patch: Pillow → 10.3.0 (CVE-2023-44323 fixé)', c:'green' },
-  { ts:'02:36', stage:'AI',   cls:'s', text:'✓ Patch: SQL paramétrisé pour /user endpoint', c:'green' },
-  { ts:'02:37', stage:'AI',   cls:'i', text:'[AUDIT] Provider: claude | Fallback: NOT activated', c:'blue' },
-];
+// ── Console Jenkins ───────────────────────────────────────────────────────────
+async function fetchConsoleLogs() {
+  try {
+    const r = await fetch('/api/jenkins/logs');
+    const d = await r.json();
+    if (!d.available || !d.text) return;
+    if (d.text === lastLogText)  return;
 
-function bootConsole() {
-  const body = document.getElementById('consoleBody');
-  body.innerHTML = '';
-  BOOT_LOGS.forEach((l, i) => {
-    setTimeout(() => appendLog(l.ts, l.stage, l.cls, l.text, l.c), i * 60);
-  });
-  setTimeout(() => {
+    lastLogText = d.text;
+    const body  = document.getElementById('consoleBody');
+    body.innerHTML = '';
+
+    d.text.split('\n').slice(-LOG_MAX_LINES).forEach(raw => {
+      if (!raw.trim()) return;
+      const p  = parseJenkinsLine(raw);
+      const el = document.createElement('div');
+      el.className = 'log-line';
+      el.innerHTML = `
+        <span class="log-ts">${p.ts}</span>
+        <span class="log-stage ${p.cls}">${p.stage}</span>
+        <span class="log-text ${p.color}">${escHtml(p.text)}</span>
+      `;
+      body.appendChild(el);
+    });
+
+    body.scrollTop = body.scrollHeight;
     appendCursor();
-  }, BOOT_LOGS.length * 60 + 100);
+  } catch (e) { /* silencieux */ }
 }
 
-function appendLog(ts, stage, cls, text, c) {
-  const body = document.getElementById('consoleBody');
-  // Remove old cursor if any
-  const old = body.querySelector('.log-cursor-line');
-  if (old) old.remove();
+function parseJenkinsLine(raw) {
+  let ts = '–', stage = 'SYS', cls = 'i', text = raw, color = '';
 
+  const tsM = raw.match(/\[(\d{2}:\d{2}:\d{2})\]/);
+  if (tsM) { ts = tsM[1]; text = raw.slice(raw.indexOf(tsM[0]) + tsM[0].length).trim(); }
+
+  const low = text.toLowerCase();
+  if      (low.includes('[sast]')  || low.includes('semgrep'))                         { stage = 'SAST';  cls = 'i'; }
+  else if (low.includes('[sca]')   || low.includes('trivy'))                           { stage = 'SCA';   cls = 'i'; }
+  else if (low.includes('[dast]')  || low.includes('zap'))                             { stage = 'DAST';  cls = 'i'; }
+  else if (low.includes('[ai]')    || low.includes('claude') || low.includes('ollama')){ stage = 'AI';    cls = 'p'; }
+  else if (low.includes('[audit]'))                                                     { stage = 'AUDIT'; cls = 'i'; }
+  else if (low.includes('[pipeline]'))                                                  { stage = 'PIPE';  cls = 'i'; }
+  else if (low.includes('error')   || low.includes('failed'))                          { stage = 'ERR';   cls = 'e'; }
+  else if (low.includes('stage('))                                                      { stage = 'STGE';  cls = 's'; }
+
+  if      (low.includes('error')   || low.includes('failed') || low.includes('✗'))  color = 'red';
+  else if (low.includes('warn')    || low.includes('cve'))                            color = 'amber';
+  else if (low.includes('success') || low.includes('✓') || low.includes('done'))     color = 'green';
+  else if (low.includes('claude')  || low.includes('ollama') || low.includes('fallback')) color = 'purple';
+  else if (low.includes('[pipeline]'))                                                 color = 'blue';
+  else if (low.includes('===')     || low.startsWith('+ '))                           color = 'bright';
+
+  return { ts, stage, cls, text, color };
+}
+
+// ── Reset métriques au démarrage d'un nouveau build ───────────────────────────
+function resetMetrics() {
+  ['m-cve','m-sast','m-zap','m-ai'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = '–';
+  });
+  document.getElementById('m-cve-sub')  && (document.getElementById('m-cve-sub').textContent  = '– critical · – high');
+  document.getElementById('m-sast-sub') && (document.getElementById('m-sast-sub').textContent = 'Semgrep analysis');
+  document.getElementById('m-zap-sub')  && (document.getElementById('m-zap-sub').textContent  = '– high severity');
+  document.getElementById('m-ai-sub')   && (document.getElementById('m-ai-sub').textContent   = '– calls · 0 fallbacks');
+  document.getElementById('aiCalls')    && (document.getElementById('aiCalls').textContent    = '–');
+  document.getElementById('fallbackCount') && (document.getElementById('fallbackCount').textContent = '0');
+  allFindings = [];
+  renderFindings('all');
+  appendLog('–', 'SYS', 'i', '↺ Métriques réinitialisées — nouveau build en cours', 'blue');
+}
+
+// ── Historique des builds ─────────────────────────────────────────────────────
+async function fetchHistory() {
+  try {
+    const r = await fetch('/api/history');
+    const data = await r.json();
+    renderHistory(data);
+  } catch (e) { /* silencieux */ }
+}
+
+function renderHistory(builds) {
+  const container = document.getElementById('historyList');
+  if (!container) return;
+
+  if (!builds || builds.length === 0) {
+    container.innerHTML = `<div class="history-empty"><i class="ti ti-history"></i><br>Aucun build archivé</div>`;
+    return;
+  }
+
+  container.innerHTML = '';
+  builds.forEach(b => {
+    const statusClass = {
+      SUCCESS: 'done', FAILURE: 'fail', UNSTABLE: 'warn', ABORTED: 'warn'
+    }[b.build_result] || 'wait';
+
+    const statusIcon  = { done: 'ti-circle-check', fail: 'ti-circle-x', warn: 'ti-alert-circle', wait: 'ti-clock' }[statusClass];
+    const statusColor = { done: 'green', fail: 'red', warn: 'amber', wait: '' }[statusClass];
+
+    const date = b.timestamp ? new Date(b.timestamp).toLocaleString('fr-FR', {
+      day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'
+    }) : '–';
+
+    const dur = b.duration_ms > 0
+      ? `${Math.floor(b.duration_ms/60000)}m${String(Math.floor((b.duration_ms%60000)/1000)).padStart(2,'0')}s`
+      : '–';
+
+    const el = document.createElement('div');
+    el.className = 'history-item';
+    el.innerHTML = `
+      <div class="history-header">
+        <div class="history-build">
+          <i class="ti ${statusIcon} ${statusColor}"></i>
+          <span class="history-num">#${b.build_number}</span>
+          <span class="history-branch mono">${escHtml(b.branch || '–')}</span>
+        </div>
+        <span class="history-dur">${dur}</span>
+      </div>
+      <div class="history-date">${date} · ${escHtml(b.commit || '–')}</div>
+      <div class="history-stats">
+        <span class="hstat red"><i class="ti ti-bug"></i>${b.cve_total}</span>
+        <span class="hstat amber"><i class="ti ti-code"></i>${b.sast_findings}</span>
+        <span class="hstat blue"><i class="ti ti-antenna"></i>${b.zap_alerts}</span>
+        <span class="hstat purple"><i class="ti ti-brain"></i>${(b.ai_provider||'–').toUpperCase()}</span>
+      </div>
+    `;
+    el.onclick = () => expandHistoryBuild(b, el);
+    container.appendChild(el);
+  });
+}
+
+function expandHistoryBuild(b, el) {
+  // toggle detail panel
+  const existing = el.querySelector('.history-detail');
+  if (existing) { existing.remove(); return; }
+  document.querySelectorAll('.history-detail').forEach(d => d.remove());
+
+  const detail = document.createElement('div');
+  detail.className = 'history-detail';
+  detail.innerHTML = `
+    <div class="hdetail-row"><span>CVEs</span><span>${b.cve_total} total · ${b.cve_critical} critical · ${b.cve_high} high</span></div>
+    <div class="hdetail-row"><span>SAST</span><span>${b.sast_findings} findings</span></div>
+    <div class="hdetail-row"><span>ZAP</span><span>${b.zap_alerts} alerts · ${b.zap_high} high</span></div>
+    <div class="hdetail-row"><span>AI</span><span>${(b.ai_provider||'–').toUpperCase()} · ${b.ai_calls} calls · ${b.fallback_count} fallbacks</span></div>
+    <div class="hdetail-downloads">
+      <a href="/api/history/${b.build_number}/reports/trivy-report.json" target="_blank" class="hdl-btn"><i class="ti ti-package"></i> Trivy</a>
+      <a href="/api/history/${b.build_number}/reports/semgrep-results.json" target="_blank" class="hdl-btn"><i class="ti ti-code"></i> Semgrep</a>
+      <a href="/api/history/${b.build_number}/reports/rapport-zerotrust.pdf" target="_blank" class="hdl-btn"><i class="ti ti-file-type-pdf"></i> PDF</a>
+    </div>
+  `;
+  el.appendChild(detail);
+}
+
+// ── Trigger pipeline ──────────────────────────────────────────────────────────
+async function triggerPipeline(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Lancement…'; }
+  try {
+    const r = await fetch('/api/jenkins/trigger', { method: 'POST' });
+    const d = await r.json();
+    if (d.success) {
+      appendLog('–', 'SYS', 's', `✓ ${d.message}`, 'green');
+      lastBuildFinished = false;
+      resetMetrics();
+      setTimeout(refreshAll, 3000);
+    } else {
+      appendLog('–', 'SYS', 'e', `✗ Erreur : ${d.error}`, 'red');
+    }
+  } catch (e) {
+    appendLog('–', 'SYS', 'e', '✗ Impossible de contacter le serveur', 'red');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="ti ti-player-play"></i>Lancer pipeline'; }
+    appendCursor();
+  }
+}
+
+// ── Sync manuelle ─────────────────────────────────────────────────────────────
+async function manualSync() {
+  appendLog('–', 'SYS', 'i', 'Synchronisation manuelle des rapports…', 'blue');
+  await autoSyncReports(lastBuildNumber);
+}
+
+// ── Simulate Fallback ─────────────────────────────────────────────────────────
+function simulateFallback() {
+  fallbackActive = !fallbackActive;
+
+  const claude      = document.getElementById('claudeChip') || document.querySelectorAll('.provider-status')[0];
+  const ollama      = document.getElementById('ollamaChip') || document.querySelectorAll('.provider-status')[1];
+  const mAi         = document.getElementById('m-ai');
+  const mAiProvider = document.getElementById('m-ai-provider');
+  const fc          = document.getElementById('fallbackCount');
+
+  if (fallbackActive) {
+    if (claude) { claude.className = 'provider-status offline';      claude.textContent = 'Offline'; }
+    if (ollama) { ollama.className = 'provider-status ollama-active'; ollama.textContent = 'Actif'; }
+    if (mAi)         mAi.textContent         = 'OLLAMA';
+    if (mAiProvider) mAiProvider.textContent = 'OLLAMA';
+    if (fc)          fc.textContent          = String(parseInt(fc.textContent || '0') + 1);
+    appendLog('–', 'AI', 'e', '✗ Claude API indisponible — timeout réseau simulé', 'red');
+    setTimeout(() => appendLog('–', 'AI', 'i', '⚡ FALLBACK → Ollama Mistral 7B (local)', 'amber'), 300);
+    setTimeout(() => appendLog('–', 'AI', 'i', '[AUDIT] provider=ollama | données traitées localement', 'blue'), 600);
+  } else {
+    if (claude) { claude.className = 'provider-status ok';      claude.textContent = 'Actif'; }
+    if (ollama) { ollama.className = 'provider-status standby'; ollama.textContent = 'Standby'; }
+    if (mAi)         mAi.textContent         = 'CLAUDE';
+    if (mAiProvider) mAiProvider.textContent = 'CLAUDE';
+    appendLog('–', 'AI', 's', '✓ Claude API restaurée — provider primaire actif', 'green');
+    setTimeout(() => appendLog('–', 'AI', 'i', '[AUDIT] provider=claude | fallback désactivé', 'blue'), 300);
+  }
+  appendCursor();
+}
+
+// ── Console helpers ───────────────────────────────────────────────────────────
+function appendLog(ts, stage, cls, text, color) {
+  const body = document.getElementById('consoleBody');
+  body.querySelector('.log-cursor-line')?.remove();
   const el = document.createElement('div');
   el.className = 'log-line';
-  el.innerHTML = `<span class="log-ts">${ts}</span><span class="log-stage ${cls}">${stage}</span><span class="log-text ${c||''}">${escHtml(text)}</span>`;
+  el.innerHTML = `
+    <span class="log-ts">${ts}</span>
+    <span class="log-stage ${cls}">${stage}</span>
+    <span class="log-text ${color || ''}">${escHtml(text)}</span>
+  `;
   body.appendChild(el);
+  while (body.children.length > LOG_MAX_LINES) body.removeChild(body.firstChild);
   body.scrollTop = body.scrollHeight;
 }
 
 function appendCursor() {
   const body = document.getElementById('consoleBody');
+  body.querySelector('.log-cursor-line')?.remove();
   const el = document.createElement('div');
   el.className = 'log-line log-cursor-line';
-  el.innerHTML = `<span class="log-ts">–</span><span class="log-stage i">AI</span><span class="log-text"><span class="log-cursor"></span></span>`;
+  el.innerHTML = `<span class="log-ts">–</span><span class="log-stage i">–</span><span class="log-text"><span class="log-cursor"></span></span>`;
   body.appendChild(el);
   body.scrollTop = body.scrollHeight;
 }
 
 function clearConsole() {
   document.getElementById('consoleBody').innerHTML = '';
+  lastLogText = '';
   appendLog('–', 'SYS', 'i', 'Console vidée', 'blue');
   appendCursor();
 }
 
-function scrollConsole() {
-  const b = document.getElementById('consoleBody');
-  b.scrollTop = b.scrollHeight;
-}
+function scrollConsole() { document.getElementById('consoleBody').scrollTop = 99999; }
 
 function copyLogs() {
   const lines = [...document.querySelectorAll('#consoleBody .log-line')]
-    .map(l => l.textContent).join('\n');
+    .map(l => l.textContent.trim()).join('\n');
   navigator.clipboard.writeText(lines).catch(() => {});
-  appendLog('–', 'SYS', 's', '✓ Logs copiés dans le presse-papier', 'green');
+  appendLog('–', 'SYS', 's', '✓ Logs copiés', 'green');
 }
 
-// ─── Fallback simulation ──────────────────────────────────────────────────────
-function simulateFallback() {
-  fallbackActive = !fallbackActive;
-  const claude = document.getElementById('claudeChip');
-  const ollama = document.getElementById('ollamaChip');
-
-  if (fallbackActive) {
-    claude.className = 'provider-status offline';
-    claude.textContent = 'Offline';
-    ollama.className = 'provider-status ollama-active';
-    ollama.textContent = 'Actif';
-    appendLog('now', 'AI', 'e', 'Claude API indisponible — timeout après 30s', 'red');
-    setTimeout(() => appendLog('now', 'AI', 'a', '⚡ FALLBACK activé → Ollama local (mistral:7b)', 'amber'), 300);
-    setTimeout(() => appendLog('now', 'AI', 'i', '[AUDIT] Provider: ollama | Données traitées LOCALEMENT', 'blue'), 600);
-    setTimeout(() => appendLog('now', 'AI', 'p', '→ http://localhost:11434/api/generate ...', 'purple'), 900);
-    const fc = document.getElementById('fallbackCount');
-    fc.textContent = parseInt(fc.textContent || 0) + 1;
-  } else {
-    claude.className = 'provider-status ok';
-    claude.textContent = 'Actif';
-    ollama.className = 'provider-status standby';
-    ollama.textContent = 'Standby';
-    appendLog('now', 'AI', 's', '✓ Claude API restaurée — retour au provider primaire', 'green');
-    appendLog('now', 'AI', 'i', '[AUDIT] Provider: claude | Fallback: désactivé', 'blue');
-  }
-  appendCursor();
-}
-
-// ─── Stage click ──────────────────────────────────────────────────────────────
-function stageClicked(stage) {
-  appendLog('–', 'UI', 'i', `Stage sélectionné: ${stage.name} [${stage.sub}]`, 'blue');
-}
-
-// ─── Download ─────────────────────────────────────────────────────────────────
-function downloadFile(filename) {
-  appendLog('–', 'DL', 's', `Téléchargement: ${filename}`, 'green');
-  window.open(`/reports/${filename}`, '_blank');
-}
-
-// ─── Nav views ────────────────────────────────────────────────────────────────
-function showView(view) {
+// ── Navigation ────────────────────────────────────────────────────────────────
+function showView(view, evt) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-  appendLog('–', 'UI', 'i', `Vue: ${view}`, 'blue');
+  if (evt?.currentTarget) evt.currentTarget.classList.add('active');
 }
 
-// ─── Utils ────────────────────────────────────────────────────────────────────
+function stageClicked(stage) {
+  appendLog('–', 'UI', 'i', `Stage: ${stage.name} [${stage.status}] — ${stage.duration}`, 'blue');
+}
+
+function downloadFile(filename) { window.open(`/reports/${filename}`, '_blank'); }
+
+// ── Utils ─────────────────────────────────────────────────────────────────────
 function escHtml(s) {
   return String(s)
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
-    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
-
-// ─── Demo findings (fallback si pas de vrai serveur) ─────────────────────────
-const DEMO_FINDINGS = [
-  { source:'SAST', severity:'critical', title:'SQL Injection — /user endpoint',          file:'app.py:42 · f"SELECT … \'{username}\'"',       detail:'Paramètre username injecté directement dans la requête SQL sans échappement.' },
-  { source:'SAST', severity:'critical', title:'OS Command Injection — /ping',            file:'app.py:67 · subprocess shell=True',             detail:'Input utilisateur passé à shell=True — RCE possible.' },
-  { source:'SCA',  severity:'critical', title:'CVE-2023-44323 — Pillow 9.0.0',           file:'requirements.txt · fix: Pillow>=10.3.0',        detail:'Remote code execution via image malformée. CVSS 8.8.' },
-  { source:'SCA',  severity:'high',     title:'CVE-2023-2650 — cryptography 3.3.1',      file:'requirements.txt · fix: cryptography>=41.0.0',  detail:'Denial of service via PKCS12. CVSS 7.5.' },
-  { source:'SCA',  severity:'high',     title:'CVE-2021-33503 — urllib3 1.26.4',         file:'requirements.txt · fix: urllib3>=1.26.5',       detail:'Infinite loop via réponse HTTP malformée. CVSS 7.5.' },
-  { source:'DAST', severity:'medium',   title:'Missing X-Content-Type-Options',           file:'Tous les endpoints · Header HTTP manquant',     detail:'Ajouter: response.headers["X-Content-Type-Options"] = "nosniff"' },
-  { source:'DAST', severity:'medium',   title:'Flask debug mode exposé',                  file:'app.py · debug=True en production',             detail:'Le mode debug expose le debugger Werkzeug. Désactiver en production.' },
-  { source:'DAST', severity:'medium',   title:'Missing Content-Security-Policy',          file:'Tous les endpoints · Header CSP absent',        detail:'Risque XSS sans CSP. Configurer flask-talisman ou équivalent.' },
-  { source:'DAST', severity:'high',     title:'SQLi confirmée (live) — /user?username=\'', file:'ZAP active scan · Payload: \' OR 1=1--',     detail:'Injection SQL confirmée en runtime par OWASP ZAP.' },
-];

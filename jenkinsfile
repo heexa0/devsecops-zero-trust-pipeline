@@ -2,11 +2,16 @@ pipeline {
     agent any
 
     environment {
-        IMAGE_NAME   = 'zerotrust-app'
-        OLLAMA_URL   = 'http://ollama:11434'
-        OLLAMA_MODEL = 'llama3.2:3b'
-        REPORTS_DIR  = 'reports'
-        VENV         = '/opt/zerotrust-venv'
+        IMAGE_NAME          = 'zerotrust-app'
+        OLLAMA_URL          = 'http://ollama:11434'
+        OLLAMA_MODEL        = 'llama3.2:3b'
+        REPORTS_DIR         = 'reports'
+        VENV                = '/opt/zerotrust-venv'
+        PROD_CONTAINER      = 'zerotrust-prod'
+        PROD_PORT           = '5002'
+        STAGING_CONTAINER = 'zerotrust-staging'
+        STAGING_NETWORK   = 'devsecops-zero-trust-pipeline_zerotrust-net'
+        STAGING_PORT      = '5001'
     }
 
     options {
@@ -290,6 +295,143 @@ except Exception as e:
                 always {
                     archiveArtifacts artifacts: "${REPORTS_DIR}/rapport-zerotrust.pdf",
                                      allowEmptyArchive: true
+                }
+            }
+        }
+        stage('8. Deploy - Production') {
+            steps {
+
+                // ── 1. Arrêter l'ancienne prod proprement ─────────────────────
+                sh '''
+                    echo "[DEPLOY] Arrêt de l'ancienne instance prod (si existante)..."
+                    docker stop ${PROD_CONTAINER} 2>/dev/null || true
+                    docker rm   ${PROD_CONTAINER} 2>/dev/null || true
+                    echo "[DEPLOY] Nettoyage OK"
+                '''
+
+                // ── 2. Déployer staging (healthcheck avant promo) ─────────────
+                sh '''
+                    echo "[DEPLOY] Démarrage du conteneur staging..."
+                    docker run -d \
+                        --name   ${STAGING_CONTAINER} \
+                        --network ${STAGING_NETWORK} \
+                        -p ${STAGING_PORT}:5000 \
+                        --restart unless-stopped \
+                        ${IMAGE_NAME}:${BUILD_NUMBER}
+
+                    echo "[DEPLOY] Attente démarrage Flask (max 30s)..."
+                    TRIES=0
+                    until docker run --rm \
+                            --network ${STAGING_NETWORK} \
+                            curlimages/curl:latest \
+                            curl -sf http://${STAGING_CONTAINER}:5000/health \
+                            2>/dev/null || [ $TRIES -ge 15 ]; do
+                        TRIES=$((TRIES+1))
+                        sleep 2
+                    done
+
+                    # Vérifier que le healthcheck a réussi (pas juste timeout)
+                    docker run --rm \
+                        --network ${STAGING_NETWORK} \
+                        curlimages/curl:latest \
+                        curl -sf http://${STAGING_CONTAINER}:5000/health || {
+                        echo "[DEPLOY] ERREUR : Flask ne répond pas — déploiement annulé"
+                        docker rm -f ${STAGING_CONTAINER} 2>/dev/null || true
+                        exit 1
+                    }
+                    echo "[DEPLOY] Flask staging opérationnel en ${TRIES} tentatives"
+                '''
+
+                // ── 3. Smoke tests fonctionnels ───────────────────────────────
+                sh '''
+                    echo "[DEPLOY] Smoke tests..."
+
+                    # Test 1 : route racine
+                    RESP=$(docker run --rm \
+                        --network ${STAGING_NETWORK} \
+                        curlimages/curl:latest \
+                        curl -sf http://${STAGING_CONTAINER}:5000/ 2>/dev/null)
+                    echo "Route / : $RESP"
+                    echo "$RESP" | grep -q "Task Manager API" || {
+                        echo "[DEPLOY] ERREUR smoke test route /"
+                        docker rm -f ${STAGING_CONTAINER} 2>/dev/null || true
+                        exit 1
+                    }
+
+                    # Test 2 : health explicite
+                    HEALTH=$(docker run --rm \
+                        --network ${STAGING_NETWORK} \
+                        curlimages/curl:latest \
+                        curl -sf http://${STAGING_CONTAINER}:5000/health 2>/dev/null)
+                    echo "Route /health : $HEALTH"
+                    echo "$HEALTH" | grep -q "ok" || {
+                        echo "[DEPLOY] ERREUR smoke test /health"
+                        docker rm -f ${STAGING_CONTAINER} 2>/dev/null || true
+                        exit 1
+                    }
+
+                    echo "[DEPLOY] Tous les smoke tests OK"
+                '''
+
+                // ── 4. Promotion staging → production ─────────────────────────
+                sh '''
+                    echo "[DEPLOY] Promotion vers production..."
+
+                    # Stopper le staging (il a servi à valider)
+                    docker stop ${STAGING_CONTAINER} 2>/dev/null || true
+                    docker rm   ${STAGING_CONTAINER} 2>/dev/null || true
+
+                    # Lancer le conteneur de production avec nom stable
+                    docker run -d \
+                        --name   ${PROD_CONTAINER} \
+                        --network ${STAGING_NETWORK} \
+                        -p ${PROD_PORT}:5000 \
+                        --restart unless-stopped \
+                        -l deploy.build="${BUILD_NUMBER}" \
+                        -l deploy.image="${IMAGE_NAME}:${BUILD_NUMBER}" \
+                        ${IMAGE_NAME}:${BUILD_NUMBER}
+
+                    # Vérification finale prod
+                    sleep 3
+                    docker run --rm \
+                        --network ${STAGING_NETWORK} \
+                        curlimages/curl:latest \
+                        curl -sf http://${PROD_CONTAINER}:5000/health || {
+                        echo "[DEPLOY] ERREUR : prod ne répond pas !"
+                        exit 1
+                    }
+
+                    echo "[DEPLOY] ============================================"
+                    echo "[DEPLOY] PRODUCTION DÉPLOYÉE — Build ${BUILD_NUMBER}"
+                    echo "[DEPLOY] Image    : ${IMAGE_NAME}:${BUILD_NUMBER}"
+                    echo "[DEPLOY] Container: ${PROD_CONTAINER}"
+                    echo "[DEPLOY] Port hôte: ${PROD_PORT} → accès : http://localhost:${PROD_PORT}"
+                    echo "[DEPLOY] ============================================"
+                '''
+
+                // ── 5. Tag 'latest' pour traçabilité ──────────────────────────
+                sh 'docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${IMAGE_NAME}:latest'
+            }
+
+            post {
+                success {
+                    echo "[DEPLOY] Déploiement production réussi — Build ${BUILD_NUMBER}"
+                }
+                failure {
+                    // Rollback : nettoyer les conteneurs de ce build en cas d'échec
+                    sh '''
+                        echo "[DEPLOY] ÉCHEC — rollback en cours..."
+                        docker rm -f ${STAGING_CONTAINER} 2>/dev/null || true
+                        docker rm -f ${PROD_CONTAINER}    2>/dev/null || true
+                        echo "[DEPLOY] Rollback terminé"
+                    '''
+                }
+                always {
+                    sh '''
+                        echo "[DEPLOY] État des conteneurs zerotrust :"
+                        docker ps --filter "name=zerotrust" \
+                            --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" || true
+                    '''
                 }
             }
         }

@@ -1,0 +1,53 @@
+[
+  {
+    "build_number": 43,
+    "build_result": "ABORTED",
+    "branch": "draft2",
+    "commit": "bff374d",
+    "duration_ms": 0,
+    "timestamp": "2026-05-23T23:37:11.475000",
+    "cve_total": 0,
+    "cve_critical": 0,
+    "cve_high": 0,
+    "sast_findings": 1,
+    "zap_alerts": 1,
+    "zap_high": 0,
+    "ai_provider": "claude",
+    "ai_calls": 0,
+    "fallback_count": 0
+  },
+  {
+    "build_number": 42,
+    "build_result": "FAILURE",
+    "branch": "draft2",
+    "commit": "bff374d",
+    "duration_ms": 2044795,
+    "timestamp": "2026-05-23T22:03:26.996000",
+    "cve_total": 0,
+    "cve_critical": 0,
+    "cve_high": 0,
+    "sast_findings": 1,
+    "zap_alerts": 1,
+    "zap_high": 0,
+    "ai_provider": "claude",
+    "ai_calls": 0,
+    "fallback_count": 0
+  },
+  {
+    "build_number": 41,
+    "build_result": "SUCCESS",
+    "branch": "draft2",
+    "commit": "bff374d",
+    "duration_ms": 2428635,
+    "timestamp": "2026-05-23T20:46:34.827000",
+    "cve_total": 0,
+    "cve_critical": 0,
+    "cve_high": 0,
+    "sast_findings": 1,
+    "zap_alerts": 1,
+    "zap_high": 0,
+    "ai_provider": "claude",
+    "ai_calls": 0,
+    "fallback_count": 0
+  }
+]
