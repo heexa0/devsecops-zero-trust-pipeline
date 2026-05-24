@@ -1,5 +1,4 @@
 import sys
-import json
 from pathlib import Path
 from rich.console import Console
 from rich.markdown import Markdown
@@ -10,6 +9,37 @@ from utils import charger_json, afficher_banniere
 console = Console()
  
  
+def _extraire_cves_trivy(trivy: dict) -> list:
+    """Extrait les CVEs triées CRITICAL > HIGH > MEDIUM depuis le rapport Trivy."""
+    order = {'CRITICAL': 0, 'HIGH': 1, 'MEDIUM': 2, 'LOW': 3}
+    cves = []
+    for result in trivy.get('Results', []):
+        for v in result.get('Vulnerabilities', []):
+            cves.append({
+                'id':       v.get('VulnerabilityID', 'N/A'),
+                'pkg':      f"{v.get('PkgName', '')}@{v.get('InstalledVersion', '')}",
+                'severity': v.get('Severity', ''),
+                'title':    v.get('Title', '')[:100],
+                'fixed':    v.get('FixedVersion', 'N/A'),
+            })
+    cves.sort(key=lambda x: order.get(x['severity'], 9))
+    return cves
+
+
+def _extraire_findings_semgrep(semgrep: dict) -> list:
+    """Extrait les findings Semgrep de façon concise."""
+    findings = []
+    for r in semgrep.get('results', []):
+        findings.append({
+            'rule':     r.get('check_id', '').split('.')[-1],
+            'file':     r.get('path', ''),
+            'line':     r.get('start', {}).get('line', ''),
+            'severity': r.get('extra', {}).get('severity', ''),
+            'message':  r.get('extra', {}).get('message', '')[:150],
+        })
+    return findings
+
+
 def _extraire_alerts_zap(zap: dict) -> list:
     """Extrait toutes les alertes de tous les sites ZAP."""
     alerts = []
@@ -28,55 +58,57 @@ def generer_rapport_pedagogique(
     semgrep = charger_json(semgrep_path) or {}
     zap     = charger_json(zap_path) or {}
 
-    # Résumé SCA
-    nb_cve = sum(
-        len(r.get('Vulnerabilities', []))
-        for r in trivy.get('Results', [])
+    # SCA — CVEs extraites proprement (pas de dump JSON brut)
+    cves     = _extraire_cves_trivy(trivy)
+    nb_cve   = len(cves)
+    top_cves = cves[:20]
+    cves_text = '\n'.join(
+        f"- {c['id']} | {c['severity']} | {c['pkg']} | {c['title']} | fix: {c['fixed']}"
+        for c in top_cves
     )
-    nb_sast = len(semgrep.get('results', []))
 
-    # Résumé DAST
-    zap_alerts = _extraire_alerts_zap(zap)
+    # SAST — findings Semgrep concis
+    findings    = _extraire_findings_semgrep(semgrep)
+    nb_sast     = len(findings)
+    sast_text   = '\n'.join(
+        f"- [{f['severity']}] {f['rule']} — {f['file']}:{f['line']} — {f['message']}"
+        for f in findings[:10]
+    )
+
+    # DAST — alertes ZAP High/Medium
+    zap_alerts     = _extraire_alerts_zap(zap)
     nb_dast_high   = sum(1 for a in zap_alerts if a.get('riskcode') == '3')
     nb_dast_medium = sum(1 for a in zap_alerts if a.get('riskcode') == '2')
     nb_dast_low    = sum(1 for a in zap_alerts if a.get('riskcode') == '1')
-
-    # Extrait des alertes DAST High/Medium pour le prompt
-    dast_critical_alerts = [
-        {
-            'alert': a.get('alert'),
-            'riskdesc': a.get('riskdesc'),
-            'cweid': a.get('cweid'),
-            'solution': a.get('solution', '')[:300],
-            'url': a.get('instances', [{}])[0].get('uri', '') if a.get('instances') else ''
-        }
+    dast_text = '\n'.join(
+        f"- [{a.get('riskdesc','')}] {a.get('alert','')} | CWE-{a.get('cweid','')} | {(a.get('instances') or [{}])[0].get('uri','')}"
         for a in zap_alerts if a.get('riskcode') in ('3', '2')
-    ]
+    )
 
     prompt = f"""Tu es un ingénieur DevSecOps senior produisant un rapport d'analyse de sécurité destiné à une équipe technique.
 
-Résultats des scans de sécurité :
-- Trivy (SCA) : {nb_cve} CVE détectées dans les dépendances Python
-- Semgrep (SAST) : {nb_sast} findings dans le code source
-- OWASP ZAP (DAST) : {nb_dast_high} High, {nb_dast_medium} Medium, {nb_dast_low} Low — scan dynamique sur l'application déployée
+Résultats des scans :
+- Trivy (SCA)     : {nb_cve} CVE dans les dépendances Python
+- Semgrep (SAST)  : {nb_sast} findings dans le code source
+- OWASP ZAP (DAST): {nb_dast_high} High, {nb_dast_medium} Medium, {nb_dast_low} Low
 
-Données Trivy (extrait) :
-{json.dumps(trivy.get('Results', [])[:2], ensure_ascii=False)[:1200]}
+CVEs Trivy (top {len(top_cves)}, triées par sévérité) :
+{cves_text if cves_text else 'Aucune CVE détectée'}
 
-Données Semgrep (extrait) :
-{json.dumps(semgrep.get('results', [])[:3], ensure_ascii=False)[:800]}
+Findings Semgrep :
+{sast_text if sast_text else 'Aucun finding'}
 
-Données ZAP — alertes High/Medium :
-{json.dumps(dast_critical_alerts[:5], ensure_ascii=False)[:1000]}
+Alertes ZAP High/Medium :
+{dast_text if dast_text else 'Aucune alerte High/Medium'}
 
 Génère un rapport Markdown technique structuré avec :
-1. **Executive Summary** — synthèse en 3 lignes : surface d'attaque, criticité globale, statut de conformité Zero Trust
-2. **Findings critiques** — pour chaque finding HIGH/CRITICAL (SCA + SAST + DAST) : identifiant (CVE/CWE/WASC), vecteur d'attaque, composant/endpoint affecté, impact opérationnel, exploitabilité
-3. **Plan de remédiation** — actions priorisées par sévérité avec commandes exactes (`pip install`, patches, refactoring HTTP headers), délais recommandés (immédiat / 48h / sprint prochain)
-4. **Analyse de la posture de sécurité** — forces identifiées, dette technique résiduelle, couverture des contrôles Zero Trust (SCA + SAST + DAST)
-5. **Métriques** — MTTR estimé, score de risque résiduel, recommandations pour le prochain cycle CI/CD
+1. **Executive Summary** — synthèse en 3 lignes : surface d'attaque, criticité globale, statut conformité Zero Trust
+2. **Findings critiques** — pour chaque finding HIGH/CRITICAL (SCA + SAST + DAST) : identifiant (CVE/CWE), vecteur d'attaque, composant/endpoint affecté, impact opérationnel, exploitabilité
+3. **Plan de remédiation** — actions priorisées par sévérité avec commandes exactes (`pip install`, patches, refactoring headers), délais (immédiat / 48h / sprint)
+4. **Analyse de la posture de sécurité** — forces identifiées, dette technique résiduelle, couverture Zero Trust (SCA + SAST + DAST)
+5. **Métriques** — MTTR estimé, score de risque résiduel, recommandations CI/CD
 
-Ton style : direct, factuel. Utilise la terminologie OWASP, CVSSv3, NIST, CWE. Pas d'emojis."""
+Style : direct, factuel. Terminologie OWASP, CVSSv3, NIST, CWE. Pas d'emojis."""
 
     return appeler_ollama(prompt)
  
