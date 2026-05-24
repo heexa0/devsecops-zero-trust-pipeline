@@ -159,7 +159,7 @@ const STAGE_ICONS = {
   'dast':        'ti-antenna',  'zap': 'ti-antenna',
   'cosign':      'ti-certificate', 'signature': 'ti-certificate',
   'rapport pdf': 'ti-file-type-pdf', 'pdf': 'ti-file-type-pdf',
-  'security':    'ti-shield-check', 'guard': 'ti-shield-check',
+  'ai security': 'ti-brain',        'security': 'ti-shield-check', 'guard': 'ti-shield-check',
   'deploy':      'ti-rocket',   'production': 'ti-rocket', 'déploiement': 'ti-rocket',
   'staging':     'ti-server',
   'étape':       'ti-circle-dot',
