@@ -3,7 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ZeroTrust CI/CD — ENSA PFS 2026</title>
+<title>SentinelOps — DevSecOps Platform</title>
+<meta name="description" content="SentinelOps — Plateforme DevSecOps Zero Trust centralisée avec IA">
+<meta name="application-name" content="SentinelOps">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.14.0/dist/tabler-icons.min.css">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -16,10 +18,12 @@
   <!-- ═══ SIDEBAR ═══ -->
   <aside class="sidebar">
     <div class="sidebar-logo">
-      <div class="logo-mark"><i class="ti ti-shield-lock"></i></div>
-      <div>
-        <div class="logo-text">ZT-Pipeline</div>
-        <div class="logo-sub">ENSA · PFS 2026</div>
+      <div class="logo-mark" id="logoMark">
+        <img src="/static/img/logo.png" alt="SentinelOps">
+      </div>
+      <div class="logo-brand">
+        <div class="logo-text">SentinelOps</div>
+        <div class="logo-sub">DevSecOps Platform</div>
       </div>
     </div>
 
@@ -98,12 +102,12 @@
     </nav>
 
     <div class="sidebar-footer">
-      <div class="team-pill">
-        <div class="avatar">E3</div>
-        <div class="team-info">
-          <div class="team-name">Équipe 3</div>
-          <div class="team-role">3 membres · v2.0</div>
+      <div class="platform-meta">
+        <div class="platform-version">
+          <i class="ti ti-tag"></i> v2.0.0
+          <span class="version-badge">stable</span>
         </div>
+        <div class="platform-copy">© 2026 SentinelOps</div>
       </div>
     </div>
   </aside>
@@ -119,7 +123,7 @@
       </div>
       <div class="topbar-center">
         <div class="build-title-row">
-          <span class="build-name" id="buildTitle">AI-Powered Zero Trust DevSecOps</span>
+          <span class="build-name" id="buildTitle">SentinelOps · Zero Trust Pipeline</span>
           <span class="build-meta">
             Branch: <span class="mono" id="buildBranch">–</span> &nbsp;·&nbsp;
             Commit: <span class="mono accent" id="commitHash">–</span> &nbsp;·&nbsp;
