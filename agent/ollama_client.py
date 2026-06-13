@@ -31,8 +31,8 @@ def _ollama_ok():
 
 def verifier_ollama():
     c, o = _claude_ok(), _ollama_ok()
-    if c: console.print(f'[blue]Moteur 1 : Claude API ({CLOUD_MODEL})[/blue]')
-    if o: console.print(f'[green]Moteur 2 : Ollama local ({OLLAMA_MODEL})[/green]')
+    if o: console.print(f'[green]Moteur 1 : Ollama local ({OLLAMA_MODEL})[/green]')
+    if c: console.print(f'[blue]Moteur 2 : Claude API ({CLOUD_MODEL}) — standby fallback[/blue]')
     if not c and not o:
         console.print('[red]ERREUR : aucun moteur IA disponible[/red]')
         return False
@@ -72,15 +72,18 @@ def _call_ollama(prompt, max_tokens=2048):
 
 def appeler_ollama(prompt, model=None, max_tokens=4096):
     global _dernier_moteur
-    if _claude_ok():
-        r = _call_claude(prompt, max_tokens=max_tokens)
-        if r:
-            _dernier_moteur = 'Claude'
-            return r
+    # Ollama primaire
     if _ollama_ok():
         r = _call_ollama(prompt, max_tokens=min(max_tokens, 2048))
         if r:
             _dernier_moteur = 'Ollama'
+            return r
+        console.print('[yellow]Ollama échoué → bascule Claude API (fallback)[/yellow]')
+    # Claude standby / fallback
+    if _claude_ok():
+        r = _call_claude(prompt, max_tokens=max_tokens)
+        if r:
+            _dernier_moteur = 'Claude'
             return r
     console.print('[red]ERREUR CRITIQUE : aucun moteur IA n a repondu[/red]')
     return ''
