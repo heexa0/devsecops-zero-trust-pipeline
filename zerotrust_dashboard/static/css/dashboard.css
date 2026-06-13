@@ -1,4 +1,4 @@
-/* ═══ ZeroTrust CI/CD Dashboard — ENSA PFS 2026 ═══ */
+﻿/* ═══ ZeroTrust CI/CD Dashboard — ENSA PFS 2026 ═══ */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
@@ -82,15 +82,17 @@ body { font-family:var(--font); background:var(--bg); color:var(--text-primary);
 /* ── TOPBAR ── */
 .topbar { background:var(--surface); border-bottom:1px solid var(--border); padding:0 18px; height:54px; display:flex; align-items:center; gap:12px; flex-shrink:0; z-index:10; }
 .topbar-left  { display:flex; align-items:center; gap:8px; flex-shrink:0; }
-.topbar-center { flex:1; display:flex; flex-direction:column; align-items:center; min-width:0; }
+.topbar-center { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; min-width:0; overflow:hidden; padding:0 8px; }
 .topbar-right { display:flex; align-items:center; gap:8px; flex-shrink:0; }
-.build-title-row { display:flex; align-items:baseline; gap:10px; }
-.build-name { font-size:15px; font-weight:700; letter-spacing:-.02em; white-space:nowrap; }
-.build-meta { font-size:11px; color:var(--text-muted); white-space:nowrap; }
+.build-name { font-size:14px; font-weight:700; letter-spacing:-.02em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; }
+.build-meta { font-size:10px; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; margin-top:1px; }
 .mono { font-family:var(--mono); font-size:11px; }
 .accent { color:var(--accent); }
-.timer-wrap { display:flex; align-items:center; gap:8px; }
-.timer-val { font-family:var(--mono); font-size:20px; font-weight:600; letter-spacing:-.03em; }
+.timer-wrap { display:flex; align-items:center; gap:8px; flex-shrink:0; }
+.timer-val { font-family:var(--mono); font-size:20px; font-weight:600; letter-spacing:-.03em; color:var(--text-primary); transition:color .3s; }
+.timer-val.running { color:var(--accent); }
+.timer-val.done    { color:var(--success); }
+.timer-val.failed  { color:var(--danger); }
 .refresh-lbl { font-size:10px; color:var(--text-muted); white-space:nowrap; }
 
 .chip { display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:500; padding:4px 10px; border-radius:20px; border:1px solid; white-space:nowrap; }

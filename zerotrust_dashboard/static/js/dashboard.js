@@ -58,7 +58,7 @@ async function fetchJenkinsStatus() {
     jenkinsAvailable  = true;
 
     document.getElementById('buildNum').textContent    = `Build #${d.build_number}`;
-    document.getElementById('buildTitle').textContent  = 'AI-Powered Zero Trust DevSecOps';
+    document.getElementById('buildTitle').textContent  = 'SentinelOps';
     document.getElementById('buildBranch').textContent = d.branch || '–';
     document.getElementById('commitHash').textContent  = d.commit || '–';
     if (d.timestamp) document.getElementById('buildTime').textContent =
@@ -66,6 +66,7 @@ async function fetchJenkinsStatus() {
 
     applyBuildStatus(d.build_status);
     startTimerFrom(d.elapsed_sec ?? 0, d.build_status === 'running');
+    setTimerStatus(d.build_status);
 
     if (d.stages && d.stages.length > 0) renderPipelineFlow(d.stages, d.done_count, d.stages_count);
 
@@ -182,14 +183,27 @@ function renderPipelineFlow(stages, doneCount, total) {
 // ── Timer ─────────────────────────────────────────────────────────────────────
 function startTimerFrom(elapsedSec, running) {
   clearInterval(timerInterval);
-  const base = Date.now() - elapsedSec*1000;
+  // Rejeter les valeurs aberrantes (timestamps ms, négatifs, > 2h)
+  const safe = (typeof elapsedSec === 'number' && elapsedSec >= 0 && elapsedSec < 7200)
+    ? Math.floor(elapsedSec) : 0;
+  const base = Date.now() - safe * 1000;
+  const el   = document.getElementById('timer');
+  const fmt  = s => String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
+  // Couleur selon état
+  el.className = 'timer-val ' + (running ? 'running' : '');
   const tick = () => {
-    const sec = Math.floor((Date.now()-base)/1000);
-    document.getElementById('timer').textContent =
-      String(Math.floor(sec/60)).padStart(2,'0')+':'+String(sec%60).padStart(2,'0');
+    const s = Math.floor((Date.now() - base) / 1000);
+    el.textContent = fmt(s);
   };
   tick();
+  // Compter seulement si le pipeline est en cours — sinon figer
   if (running) timerInterval = setInterval(tick, 1000);
+}
+
+function setTimerStatus(status) {
+  const el = document.getElementById('timer');
+  if (!el) return;
+  el.className = 'timer-val ' + (status === 'running' ? 'running' : status === 'failure' ? 'failed' : 'done');
 }
 
 // ── Metrics ───────────────────────────────────────────────────────────────────
