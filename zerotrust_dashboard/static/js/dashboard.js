@@ -21,7 +21,9 @@ document.addEventListener('DOMContentLoaded', () => {
   appendCursor();
   refreshAll();
   fetchHistory();
+  refreshProviderStatus();                          // vérif réelle au démarrage
   setInterval(refreshAll, REFRESH_INTERVAL);
+  setInterval(refreshProviderStatus, 15000);        // recheck providers toutes les 15s
 });
 
 // ── Refresh principal ─────────────────────────────────────────────────────────
@@ -445,8 +447,111 @@ async function triggerPipeline(btn) {
   finally { if(btn){btn.disabled=false;btn.innerHTML='<i class="ti ti-player-play"></i> Lancer';} appendCursor(); }
 }
 
-// ── Simulate Fallback ─────────────────────────────────────────────────────────
-function simulateFallback() {
+// ── Simulate Fallback — appel API réel ────────────────────────────────────────
+function applyProviderState(data) {
+  // data = réponse de /api/provider/status ou /api/provider/simulate
+  const claudeChip = document.getElementById('claudeChip');
+  const ollamaChip = document.getElementById('ollamaChip');
+  const mAi        = document.getElementById('m-ai');
+  const mProv      = document.getElementById('m-ai-provider');
+  const fc         = document.getElementById('fallbackCount');
+  const dot        = document.getElementById('fallbackDot');
+
+  const claudeUp = data.claude?.up ?? (data.claude_up ?? true);
+  const ollamaUp = data.ollama?.up ?? (data.ollama_up ?? false);
+  const active   = (data.active_provider || 'ollama').toUpperCase();
+
+  if (claudeChip) {
+    if (!claudeUp) {
+      claudeChip.className = 'provider-status offline';
+      claudeChip.textContent = 'Offline';
+    } else if (active === 'CLAUDE') {
+      claudeChip.className = 'provider-status ok';
+      claudeChip.textContent = 'Actif';
+    } else {
+      claudeChip.className = 'provider-status standby';
+      claudeChip.textContent = 'Standby';
+    }
+  }
+
+  if (ollamaChip) {
+    if (!ollamaUp) {
+      ollamaChip.className = 'provider-status offline';
+      ollamaChip.textContent = 'Offline';
+    } else if (active === 'OLLAMA') {
+      ollamaChip.className = 'provider-status ollama-active';
+      ollamaChip.textContent = 'Actif';
+    } else {
+      ollamaChip.className = 'provider-status standby';
+      ollamaChip.textContent = 'Standby';
+    }
+  }
+
+  if (mAi)   mAi.textContent   = active;
+  if (mProv) mProv.textContent = active;
+
+  const isFallback = (active === 'OLLAMA') && !claudeUp;
+  fallbackActive = isFallback;
+  if (dot) dot.classList.toggle('active', isFallback);
+  if (fc && isFallback) fc.textContent = String(parseInt(fc.textContent || '0') + 1);
+}
+
+async function refreshProviderStatus() {
+  try {
+    const r = await fetch('/api/provider/status');
+    const d = await r.json();
+    applyProviderState(d);
+  } catch(e) {
+    console.warn('[Provider] status check failed', e);
+  }
+}
+
+// Appelée par le bouton "Simulate Fallback" — cible Ollama offline par défaut
+// (ton setup réel : Ollama primaire, Claude standby)
+async function simulateFallback(target) {
+  // Si pas de target fourni : toggle entre "ollama" offline et reset
+  if (!target) target = fallbackActive ? 'reset' : 'ollama';
+
+  const btn = document.querySelector('[onclick*="simulateFallback"]');
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; }
+
+  try {
+    const r = await fetch('/api/provider/simulate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target })
+    });
+    const d = await r.json();
+
+    applyProviderState(d);
+
+    if (!d.success) {
+      appendLog('–', 'AI', 'e', `✗ Erreur simulation : ${d.error}`, 'red');
+      return;
+    }
+
+    if (d.simulated_offline === 'ollama') {
+      appendLog('–', 'AI', 'e', '✗ Ollama mis offline (simulation) — bascule sur Claude API', 'red');
+      setTimeout(()=>appendLog('–','AI','i',`⚡ FALLBACK → Claude ${d.claude_up ? 'actif' : 'aussi indisponible'}`, d.claude_up ? 'amber' : 'red'), 300);
+      setTimeout(()=>appendLog('–','AI','i',`[AUDIT] provider=${d.active_provider} | simulation=true`, 'blue'), 600);
+    } else if (d.simulated_offline === 'claude') {
+      appendLog('–', 'AI', 'e', '✗ Claude API mis offline (simulation) — bascule sur Ollama', 'red');
+      setTimeout(()=>appendLog('–','AI','i',`⚡ FALLBACK → Ollama ${d.ollama_up ? 'actif (local, <35s)' : 'aussi indisponible'}`, d.ollama_up ? 'amber' : 'red'), 300);
+      setTimeout(()=>appendLog('–','AI','i',`[AUDIT] provider=${d.active_provider} | fallback=ACTIVATED | data=LOCAL`, 'blue'), 600);
+    } else {
+      appendLog('–', 'AI', 's', '✓ Simulation annulée — providers restaurés', 'green');
+      setTimeout(()=>appendLog('–','AI','i',`[AUDIT] provider=${d.active_provider} | simulation=false`, 'blue'), 300);
+    }
+  } catch(e) {
+    appendLog('–', 'AI', 'e', `✗ Erreur réseau : ${e.message}`, 'red');
+  } finally {
+    if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
+    appendCursor();
+  }
+}
+
+// Compatibilité interne (scénario 4 appelle simulateFallback directement)
+function _legacySimulateFallback() {
   fallbackActive = !fallbackActive;
   const claude=document.getElementById('claudeChip'), ollama=document.getElementById('ollamaChip');
   const mAi=document.getElementById('m-ai'), mProv=document.getElementById('m-ai-provider');

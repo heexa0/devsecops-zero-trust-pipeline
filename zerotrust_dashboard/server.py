@@ -49,6 +49,15 @@ HISTORY_DIR = os.environ.get("HISTORY_DIR", os.path.join(BASE_DIR, "history"))
 TESTAPP_DIR = os.environ.get("TESTAPP_DIR", os.path.join(BASE_DIR, "..", "test-app"))
 JENKINSFILE_PATH = os.environ.get("JENKINSFILE_PATH", os.path.join(BASE_DIR, "..", "jenkinsfile"))
 
+OLLAMA_URL      = os.environ.get("OLLAMA_URL",      "http://localhost:11434")
+OLLAMA_MODEL    = os.environ.get("OLLAMA_MODEL",    "mistral")
+ANTHROPIC_KEY   = os.environ.get("ANTHROPIC_API_KEY", "")
+
+# État partagé du provider (modifié par /api/provider/simulate)
+_provider_state = {
+    "simulated_offline": None,  # None | "claude" | "ollama"
+}
+
 os.makedirs(REPORTS_DIR, exist_ok=True)
 os.makedirs(AGENT_DIR,   exist_ok=True)
 os.makedirs(HISTORY_DIR, exist_ok=True)
@@ -608,6 +617,103 @@ def api_findings():
 @app.route("/api/ai")
 def api_ai():
     return jsonify(load_ai())
+
+# ── Provider health check ──────────────────────────────────────────────────────
+
+def _check_ollama():
+    """Vérifie si Ollama répond réellement (appel HTTP réel)."""
+    try:
+        r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+def _check_claude():
+    """Vérifie si Claude API répond avec la vraie clé."""
+    key = ANTHROPIC_KEY
+    if not key or key.startswith("sk-ant-invalid"):
+        return False
+    try:
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 1, "messages": [{"role": "user", "content": "ping"}]},
+            timeout=8,
+        )
+        return r.status_code in (200, 400, 529)  # 400 = bad request but key valid, 529 = overloaded but reachable
+    except Exception:
+        return False
+
+@app.route("/api/provider/status")
+def api_provider_status():
+    """Retourne l'état réel des deux providers (avec override simulation)."""
+    sim = _provider_state.get("simulated_offline")
+    ollama_up = False if sim == "ollama" else _check_ollama()
+    claude_up = False if sim == "claude" else _check_claude()
+
+    if claude_up and sim != "claude":
+        active = "claude"
+    elif ollama_up:
+        active = "ollama"
+    else:
+        active = "none"
+
+    return jsonify({
+        "ollama": {"up": ollama_up, "url": OLLAMA_URL, "simulated_offline": sim == "ollama"},
+        "claude": {"up": claude_up, "simulated_offline": sim == "claude"},
+        "active_provider": active,
+        "simulation_mode": sim is not None,
+    })
+
+@app.route("/api/provider/simulate", methods=["POST"])
+def api_provider_simulate():
+    """Bascule la simulation offline d'un provider.
+    Body JSON : {"target": "ollama"|"claude"|"reset"}
+    - "ollama" : simule Ollama offline → Claude prend le relais (si dispo)
+    - "claude" : simule Claude offline → Ollama prend le relais (si dispo)
+    - "reset"  : annule toute simulation
+    """
+    data = request.get_json(silent=True) or {}
+    target = data.get("target", "reset")
+
+    if target not in ("ollama", "claude", "reset"):
+        return jsonify({"success": False, "error": "target invalide"}), 400
+
+    prev = _provider_state.get("simulated_offline")
+
+    if target == "reset" or prev == target:
+        # Toggle : si déjà simulé, on reset
+        _provider_state["simulated_offline"] = None
+        msg = "Simulation annulée — tous les providers actifs"
+    else:
+        _provider_state["simulated_offline"] = target
+        other = "claude" if target == "ollama" else "ollama"
+        msg = f"{target.upper()} marqué offline (simulation) — {other.upper()} devient actif"
+
+    # Relire l'état après changement
+    sim = _provider_state["simulated_offline"]
+    ollama_up = False if sim == "ollama" else _check_ollama()
+    claude_up = False if sim == "claude" else _check_claude()
+
+    if claude_up and sim != "claude":
+        active = "claude"
+    elif ollama_up:
+        active = "ollama"
+    else:
+        active = "none"
+
+    return jsonify({
+        "success": True,
+        "message": msg,
+        "simulated_offline": sim,
+        "active_provider": active,
+        "ollama_up": ollama_up,
+        "claude_up": claude_up,
+    })
 
 
 @app.route("/api/reports")

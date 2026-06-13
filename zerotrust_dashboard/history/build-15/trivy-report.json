@@ -1,0 +1,109 @@
+{
+  "SchemaVersion": 2,
+  "Trivy": {
+    "Version": "0.70.0"
+  },
+  "ReportID": "019e5b12-a040-7c0e-b91b-4506a0ee6d8e",
+  "CreatedAt": "2026-05-24T17:40:07.872793319Z",
+  "ArtifactName": "test-app",
+  "ArtifactType": "filesystem",
+  "Results": [
+    {
+      "Target": "requirements.txt",
+      "Class": "lang-pkgs",
+      "Type": "pip",
+      "Packages": [
+        {
+          "Name": "Pillow",
+          "Identifier": {
+            "PURL": "pkg:pypi/pillow@12.2.0",
+            "UID": "e76c9cef73511768"
+          },
+          "Version": "12.2.0",
+          "Locations": [
+            {
+              "StartLine": 4,
+              "EndLine": 4
+            }
+          ],
+          "AnalyzedBy": "pip"
+        },
+        {
+          "Name": "Werkzeug",
+          "Identifier": {
+            "PURL": "pkg:pypi/werkzeug@3.1.6",
+            "UID": "f9abec0a0a5520c4"
+          },
+          "Version": "3.1.6",
+          "Locations": [
+            {
+              "StartLine": 2,
+              "EndLine": 2
+            }
+          ],
+          "AnalyzedBy": "pip"
+        },
+        {
+          "Name": "cryptography",
+          "Identifier": {
+            "PURL": "pkg:pypi/cryptography@46.0.7",
+            "UID": "507ab03d519c9271"
+          },
+          "Version": "46.0.7",
+          "Locations": [
+            {
+              "StartLine": 5,
+              "EndLine": 5
+            }
+          ],
+          "AnalyzedBy": "pip"
+        },
+        {
+          "Name": "flask",
+          "Identifier": {
+            "PURL": "pkg:pypi/flask@3.0.3",
+            "UID": "2f6ebe36676ebe6a"
+          },
+          "Version": "3.0.3",
+          "Locations": [
+            {
+              "StartLine": 1,
+              "EndLine": 1
+            }
+          ],
+          "AnalyzedBy": "pip"
+        },
+        {
+          "Name": "requests",
+          "Identifier": {
+            "PURL": "pkg:pypi/requests@2.33.0",
+            "UID": "31f1ce490eb4e91c"
+          },
+          "Version": "2.33.0",
+          "Locations": [
+            {
+              "StartLine": 3,
+              "EndLine": 3
+            }
+          ],
+          "AnalyzedBy": "pip"
+        },
+        {
+          "Name": "urllib3",
+          "Identifier": {
+            "PURL": "pkg:pypi/urllib3@2.7.0",
+            "UID": "751493b7a475c26a"
+          },
+          "Version": "2.7.0",
+          "Locations": [
+            {
+              "StartLine": 6,
+              "EndLine": 6
+            }
+          ],
+          "AnalyzedBy": "pip"
+        }
+      ]
+    }
+  ]
+}
