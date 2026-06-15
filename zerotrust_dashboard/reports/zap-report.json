@@ -1,8 +1,8 @@
 {
 	"@programName": "ZAP",
 	"@version": "2.17.0",
-	"@generated": "Sat, 13 Jun 2026 18:09:55",
-	"created": "2026-06-13T18:09:55.881587696Z",
+	"@generated": "Mon, 15 Jun 2026 21:41:02",
+	"created": "2026-06-15T21:41:02.555109055Z",
 	"site":[ 
 		{
 			"@name": "http://zerotrust-target:5000",
@@ -21,7 +21,7 @@
 					"desc": "<p>Content Security Policy (CSP) is an added layer of security that helps to detect and mitigate certain types of attacks, including Cross Site Scripting (XSS) and data injection attacks. These attacks are used for everything from data theft to site defacement or distribution of malware. CSP provides a set of standard HTTP headers that allow website owners to declare approved sources of content that browsers should be allowed to load on that page \u2014 covered types are JavaScript, CSS, HTML frames, fonts, images and embeddable objects such as Java applets, ActiveX, audio and video files.</p>",
 					"instances":[ 
 						{
-							"id": "0",
+							"id": "1",
 							"uri": "http://zerotrust-target:5000/robots.txt",
 							"nodeName": "http:\/\/zerotrust-target:5000\/robots.txt",
 							"method": "GET",
@@ -29,9 +29,19 @@
 							"attack": "",
 							"evidence": "",
 							"otherinfo": ""
+						},
+						{
+							"id": "0",
+							"uri": "http://zerotrust-target:5000/sitemap.xml",
+							"nodeName": "http:\/\/zerotrust-target:5000\/sitemap.xml",
+							"method": "GET",
+							"param": "",
+							"attack": "",
+							"evidence": "",
+							"otherinfo": ""
 						}
 					],
-					"count": "1",
+					"count": "2",
 					"systemic": false,
 					"solution": "<p>Ensure that your web server, application server, load balancer, etc. is configured to set the Content-Security-Policy header.</p>",
 					"otherinfo": "",
@@ -68,7 +78,7 @@
 					"reference": "<p>https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cross-Origin-Embedder-Policy</p>",
 					"cweid": "693",
 					"wascid": "14",
-					"sourceid": "8"
+					"sourceid": "1"
 				},
 				{
 					"pluginid": "10063",
@@ -91,7 +101,7 @@
 							"otherinfo": ""
 						},
 						{
-							"id": "12",
+							"id": "11",
 							"uri": "http://zerotrust-target:5000/sitemap.xml",
 							"nodeName": "http:\/\/zerotrust-target:5000\/sitemap.xml",
 							"method": "GET",
@@ -121,7 +131,7 @@
 					"desc": "<p>The web/application server is leaking version information via the \"Server\" HTTP response header. Access to such information may facilitate attackers identifying other vulnerabilities your web/application server is subject to.</p>",
 					"instances":[ 
 						{
-							"id": "2",
+							"id": "3",
 							"uri": "http://zerotrust-target:5000",
 							"nodeName": "http:\/\/zerotrust-target:5000",
 							"method": "GET",
@@ -131,7 +141,7 @@
 							"otherinfo": ""
 						},
 						{
-							"id": "5",
+							"id": "4",
 							"uri": "http://zerotrust-target:5000/robots.txt",
 							"nodeName": "http:\/\/zerotrust-target:5000\/robots.txt",
 							"method": "GET",
@@ -141,7 +151,7 @@
 							"otherinfo": ""
 						},
 						{
-							"id": "4",
+							"id": "5",
 							"uri": "http://zerotrust-target:5000/sitemap.xml",
 							"nodeName": "http:\/\/zerotrust-target:5000\/sitemap.xml",
 							"method": "GET",
@@ -158,7 +168,7 @@
 					"reference": "<p>https://httpd.apache.org/docs/current/mod/core.html#servertokens</p><p>https://learn.microsoft.com/en-us/previous-versions/msp-n-p/ff648552(v=pandp.10)</p><p>https://www.troyhunt.com/shhh-dont-let-your-response-headers/</p>",
 					"cweid": "497",
 					"wascid": "13",
-					"sourceid": "1"
+					"sourceid": "8"
 				},
 				{
 					"pluginid": "10021",
@@ -171,7 +181,7 @@
 					"desc": "<p>The Anti-MIME-Sniffing header X-Content-Type-Options was not set to 'nosniff'. This allows older versions of Internet Explorer and Chrome to perform MIME-sniffing on the response body, potentially causing the response body to be interpreted and displayed as a content type other than the declared content type. Current (early 2014) and legacy versions of Firefox will use the declared content type (if one is set), rather than performing MIME-sniffing.</p>",
 					"instances":[ 
 						{
-							"id": "6",
+							"id": "7",
 							"uri": "http://zerotrust-target:5000",
 							"nodeName": "http:\/\/zerotrust-target:5000",
 							"method": "GET",
@@ -188,7 +198,7 @@
 					"reference": "<p>https://learn.microsoft.com/en-us/previous-versions/windows/internet-explorer/ie-developer/compatibility/gg622941(v=vs.85)</p><p>https://owasp.org/www-community/Security_Headers</p>",
 					"cweid": "693",
 					"wascid": "15",
-					"sourceid": "8"
+					"sourceid": "1"
 				},
 				{
 					"pluginid": "10049",
@@ -238,7 +248,7 @@
 					"reference": "<p>https://datatracker.ietf.org/doc/html/rfc7234</p><p>https://datatracker.ietf.org/doc/html/rfc7231</p><p>https://www.w3.org/Protocols/rfc2616/rfc2616-sec13.html</p>",
 					"cweid": "524",
 					"wascid": "13",
-					"sourceid": "1"
+					"sourceid": "8"
 				}
 			]
 		}

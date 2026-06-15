@@ -44,16 +44,26 @@ def analyser_par_lots(vulns: list, taille_lot: int = 3) -> dict:
     total_lots = (len(vulns) + taille_lot - 1) // taille_lot
 
     for i in range(0, len(vulns), taille_lot):
-        lot = vulns[i:i + taille_lot]
+        lot     = vulns[i:i + taille_lot]
         num_lot = i // taille_lot + 1
 
         console.print(f"[blue]Lot {num_lot}/{total_lots} — analyse de {len(lot)} CVE...[/blue]")
 
-        prompt = construire_prompt(lot)
+        prompt   = construire_prompt(lot)
         resultat = appeler_ollama_json(prompt)
 
         if not resultat:
-            console.print(f"[yellow]Lot {num_lot} : timeout ou erreur, on continue...[/yellow]")
+            console.print(f"[yellow]Lot {num_lot} : aucune réponse IA, on continue...[/yellow]")
+            # Fallback manuel : générer une correction basique si la version corrigée est connue
+            for v in lot:
+                if v['version_corrigee'] != 'non disponible' and v['version_corrigee']:
+                    toutes_analyses.append({
+                        'cve':                    v['cve'],
+                        'package':                v['package'],
+                        'correction_requirements': f"{v['package']}>={v['version_corrigee']}",
+                        'priorite':               'CRITIQUE' if v['severite'] == 'CRITICAL' else 'HAUTE'
+                    })
+                    console.print(f"[yellow]  → Correction basique générée pour {v['cve']}[/yellow]")
             continue
 
         if "vulnerabilites" in resultat:
@@ -114,8 +124,8 @@ if __name__ == '__main__':
     afficher_banniere('Agent IA Remédiation — Dual AI Engine', 'blue')
 
     if not verifier_ollama():
-        console.print("[red]Lancer 'ollama serve' dans un autre terminal puis réessayer.[/red]")
-        sys.exit(1)
+        console.print("[yellow]⚠ Aucun moteur IA — remédiation manuelle uniquement[/yellow]")
+        # On continue quand même pour générer des corrections basiques depuis les données Trivy
 
     rapport = charger_json('trivy-report.json')
     if not rapport:
