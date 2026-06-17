@@ -2,5 +2,5 @@ flask==3.0.3
 Werkzeug==3.1.6
 requests==2.33.0
 Pillow==12.2.0
-cryptography==46.0.7
+cryptography==48.0.1
 urllib3==2.7.0
