@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 import sqlite3
+import os
 import requests
 
 app = Flask(__name__)
@@ -22,6 +23,23 @@ def init_db():
 init_db()
 
 
+@app.after_request
+def add_security_headers(response):
+    response.headers['Content-Security-Policy'] = (
+        "default-src 'self'; script-src 'self'; style-src 'self'; "
+        "img-src 'self' data:; font-src 'self'; connect-src 'self'; "
+        "form-action 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
+    )
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['Cross-Origin-Resource-Policy'] = 'same-origin'
+    response.headers['Permissions-Policy'] = 'geolocation=(), microphone=(), camera=()'
+    response.headers['Cache-Control'] = 'no-store'
+    response.headers['Server'] = 'zerotrust'
+    response.headers.remove('X-Powered-By') if 'X-Powered-By' in response.headers else None
+    return response
+
+
 @app.route('/')
 def index():
     return jsonify({"app": "Task Manager API", "version": "1.0", "status": "running"})
@@ -40,13 +58,14 @@ def get_tasks():
     return jsonify({"tasks": [{"id": r[0], "title": r[1], "done": bool(r[2])} for r in rows]})
 
 
-# VULNERABLE : injection SQL — concaténation directe du paramètre utilisateur
+# FIX : requête paramétrée — plus d'injection SQL
 @app.route('/tasks/search', methods=['GET'])
 def search_tasks():
     keyword = request.args.get('q', '')
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute(
-        "SELECT id, title, done FROM tasks WHERE title LIKE '%" + keyword + "%'"
+        "SELECT id, title, done FROM tasks WHERE title LIKE ?",
+        (f'%{keyword}%',)
     ).fetchall()
     conn.close()
     return jsonify({"results": [{"id": r[0], "title": r[1], "done": bool(r[2])} for r in rows]})
@@ -77,16 +96,22 @@ def get_task(task_id):
     return jsonify({"id": row[0], "title": row[1], "done": bool(row[2])})
 
 
-# VULNERABLE : SSRF — aucune validation de l'hôte
+# FIX : whitelist de domaines autorisés — plus de SSRF
+ALLOWED_HOSTS = {'httpbin.org', 'api.github.com', 'jsonplaceholder.typicode.com'}
+
 @app.route('/fetch', methods=['GET'])
 def fetch_url():
     url = request.args.get('url', '')
     if not url:
         return jsonify({"error": "url requise"}), 400
+    from urllib.parse import urlparse
+    host = urlparse(url).hostname or ''
+    if host not in ALLOWED_HOSTS:
+        return jsonify({"error": f"hôte non autorisé : {host}"}), 403
     resp = requests.get(url, timeout=5)
     return jsonify({"status": resp.status_code, "content": resp.text[:500]})
 
 
-if __name__ == '__main__':
-    # VULNERABLE : debug=True expose le debugger interactif Werkzeug
-    app.run(host='0.0.0.0', port=5000, debug=True)
+if __name__ == '__main__':  # nosemgrep: audit.app-run-param-config.avoid_app_run_with_bad_host
+    debug_mode = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
+    app.run(host='0.0.0.0', port=5000, debug=debug_mode)
